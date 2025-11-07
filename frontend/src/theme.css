@@ -1,0 +1,18 @@
+:root{
+  --sga-primary: #12216A;     /* azul navbar */
+  --sga-accent:  #FF6F1D;     /* franja naranja/botones secundarios */
+  --sga-bg:      #F3F5F9;     /* fondo página */
+  --sga-card:    #FFFFFF;     /* tarjetas */
+  --sga-text:    #1C3247;     /* títulos */
+  --sga-muted:   #8A97A7;     /* textos suaves */
+  --sga-border:  #E5E7EB;     /* borde claro */
+  --sga-shadow:  0 10px 30px rgba(0,0,0,.12);
+  --radius-xl:   16px;
+  --radius-lg:   12px;
+}
+
+
+
+
+
+

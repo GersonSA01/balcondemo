@@ -1,0 +1,282 @@
+{
+  "credenciales": {
+    "cedula": "0706191558",
+    "nombre_completo": "Gerson Alexander Suarez Aguirre",
+    "correo_institucional": "gsuareza3@unemi.edu.ec",
+    "correo_personal": "gersonsuarezaof@gmail.com",
+    "telefono": "0979716263",
+    "fecha_nacimiento": "2003-04-11",
+    "direccion": "Av. Las Américas y Costa Rica"
+  },
+  "informacion_academica": {
+    "matricula": "2021105678",
+    "estado": "ACTIVO",
+    "tipo_estudiante": "REGULAR",
+    "periodo_actual": "2024-2025 CICLO I",
+    "facultad": "Ciencias de la Ingeniería",
+    "carrera": "Ingeniería en Software",
+    "nivel_actual": "6to Semestre",
+    "modalidad": "PRESENCIAL",
+    "jornada": "MATUTINA",
+    "promedio_acumulado": 8.75,
+    "creditos_aprobados": 120,
+    "creditos_totales": 240,
+    "fecha_ingreso": "2021-05-01"
+  },
+  "materias_actuales": [
+    {
+      "codigo": "IC-601",
+      "nombre": "Principios deIngeniería de Software",
+      "creditos": 5,
+      "paralelo": "A",
+      "docente": "Ing. Carlos Mendoza MSc.",
+      "aula": "Lab. Computación 3",
+      "horario": [
+        {
+          "dia": "Lunes",
+          "hora_inicio": "08:00",
+          "hora_fin": "10:00"
+        },
+        {
+          "dia": "Miércoles",
+          "hora_inicio": "08:00",
+          "hora_fin": "10:00"
+        },
+        {
+          "dia": "Viernes",
+          "hora_inicio": "08:00",
+          "hora_fin": "10:00"
+        }
+      ],
+      "nota_parcial_1": 8.5,
+      "nota_parcial_2": 9.0,
+      "asistencia": 95,
+      "estado": "CURSANDO"
+    },
+    {
+      "codigo": "IC-602",
+      "nombre": "Base de Datos Avanzadas",
+      "creditos": 4,
+      "paralelo": "B",
+      "docente": "Ing. Ana María López PhD.",
+      "aula": "Lab. Computación 2",
+      "horario": [
+        {
+          "dia": "Martes",
+          "hora_inicio": "10:00",
+          "hora_fin": "12:00"
+        },
+        {
+          "dia": "Jueves",
+          "hora_inicio": "10:00",
+          "hora_fin": "12:00"
+        }
+      ],
+      "nota_parcial_1": 9.5,
+      "nota_parcial_2": 8.8,
+      "asistencia": 98,
+      "estado": "CURSANDO"
+    },
+    {
+      "codigo": "IC-603",
+      "nombre": "Redes de Computadoras",
+      "creditos": 4,
+      "paralelo": "A",
+      "docente": "Ing. Roberto Salazar MSc.",
+      "aula": "Aula 204",
+      "horario": [
+        {
+          "dia": "Lunes",
+          "hora_inicio": "14:00",
+          "hora_fin": "16:00"
+        },
+        {
+          "dia": "Miércoles",
+          "hora_inicio": "14:00",
+          "hora_fin": "16:00"
+        }
+      ],
+      "nota_parcial_1": 7.5,
+      "nota_parcial_2": 8.2,
+      "asistencia": 88,
+      "estado": "CURSANDO"
+    },
+    {
+      "codigo": "IC-604",
+      "nombre": "Inteligencia Artificial",
+      "creditos": 5,
+      "paralelo": "A",
+      "docente": "PhD. Laura Ramírez",
+      "aula": "Lab. Computación 1",
+      "horario": [
+        {
+          "dia": "Martes",
+          "hora_inicio": "08:00",
+          "hora_fin": "10:00"
+        },
+        {
+          "dia": "Jueves",
+          "hora_inicio": "08:00",
+          "hora_fin": "10:00"
+        },
+        {
+          "dia": "Viernes",
+          "hora_inicio": "10:00",
+          "hora_fin": "12:00"
+        }
+      ],
+      "nota_parcial_1": 9.2,
+      "nota_parcial_2": 9.5,
+      "asistencia": 100,
+      "estado": "CURSANDO"
+    },
+    {
+      "codigo": "GE-601",
+      "nombre": "Gestión de Proyectos",
+      "creditos": 3,
+      "paralelo": "C",
+      "docente": "Ing. Patricia Vega MBA",
+      "aula": "Aula 301",
+      "horario": [
+        {
+          "dia": "Viernes",
+          "hora_inicio": "14:00",
+          "hora_fin": "17:00"
+        }
+      ],
+      "nota_parcial_1": 8.8,
+      "nota_parcial_2": 9.0,
+      "asistencia": 92,
+      "estado": "CURSANDO"
+    }
+  ],
+  "examenes_proximos": [
+    {
+      "materia": "Ingeniería de Software",
+      "codigo": "IC-601",
+      "tipo": "Examen Final",
+      "fecha": "2025-11-20",
+      "hora": "08:00",
+      "aula": "Auditorio Principal",
+      "duracion_minutos": 120,
+      "temas": [
+        "Patrones de Diseño",
+        "Metodologías Ágiles",
+        "Testing y QA",
+        "DevOps"
+      ]
+    },
+    {
+      "materia": "Base de Datos Avanzadas",
+      "codigo": "IC-602",
+      "tipo": "Examen Final",
+      "fecha": "2025-11-22",
+      "hora": "10:00",
+      "aula": "Lab. Computación 2",
+      "duracion_minutos": 120,
+      "temas": [
+        "Optimización de Consultas",
+        "NoSQL",
+        "Big Data",
+        "Data Warehousing"
+      ]
+    },
+    {
+      "materia": "Redes de Computadoras",
+      "codigo": "IC-603",
+      "tipo": "Examen Final",
+      "fecha": "2025-11-25",
+      "hora": "14:00",
+      "aula": "Aula 204",
+      "duracion_minutos": 90,
+      "temas": [
+        "Protocolos TCP/IP",
+        "Enrutamiento",
+        "Seguridad de Redes",
+        "VPN y VLANs"
+      ]
+    },
+    {
+      "materia": "Inteligencia Artificial",
+      "codigo": "IC-604",
+      "tipo": "Proyecto Final",
+      "fecha": "2025-11-28",
+      "hora": "08:00",
+      "aula": "Lab. Computación 1",
+      "duracion_minutos": 180,
+      "temas": [
+        "Machine Learning",
+        "Redes Neuronales",
+        "Procesamiento de Lenguaje Natural",
+        "Visión por Computador"
+      ]
+    }
+  ],
+  "historial_academico": {
+    "materias_aprobadas": 24,
+    "materias_reprobadas": 1,
+    "materias_retiradas": 0,
+    "promedio_general": 8.75,
+    "semestres_cursados": 5,
+    "reconocimientos": [
+      {
+        "tipo": "Cuadro de Honor",
+        "periodo": "2023-2024 CICLO II",
+        "promedio": 9.2
+      }
+    ]
+  },
+  "situacion_financiera": {
+    "estado": "AL_DIA",
+    "pension_mensual": 250.00,
+    "matricula_pagada": true,
+    "fecha_ultimo_pago": "2024-10-15",
+    "saldo_pendiente": 0.00,
+    "proximo_vencimiento": "2024-11-15",
+    "beca_activa": false,
+    "descuento_aplicado": 0
+  },
+  "servicios_estudiantiles": {
+    "seguro_estudiantil": {
+      "activo": true,
+      "proveedor": "BMI",
+      "cobertura": "Nacional",
+      "vigencia": "2024-05-01 a 2025-04-30"
+    },
+    "biblioteca": {
+      "carnet": "B-202110567",
+      "libros_prestados": 2,
+      "multas_pendientes": 0.00
+    },
+    "idiomas": {
+      "nivel_ingles": "B2",
+      "modulos_completados": 6,
+      "modulos_totales": 8
+    },
+    "practicas_preprofesionales": {
+      "estado": "NO_INICIADO",
+      "horas_requeridas": 240,
+      "horas_completadas": 0
+    },
+    "vinculacion": {
+      "horas_requeridas": 160,
+      "horas_completadas": 80,
+      "proyecto_actual": "Alfabetización Digital Adultos Mayores"
+    }
+  },
+  "contactos_emergencia": [
+    {
+      "nombre": "Pedro González",
+      "parentesco": "Padre",
+      "telefono": "0998765432",
+      "correo": "pedro.gonzalez@gmail.com"
+    },
+    {
+      "nombre": "Carmen Torres",
+      "parentesco": "Madre",
+      "telefono": "0987654321",
+      "correo": "carmen.torres@gmail.com"
+    }
+  ]
+}
+

@@ -1,0 +1,44 @@
+{
+  "Academico": [
+    "Matriculación",
+    "Cambio de paralelo",
+    "Cupos por asignatura",
+    "Titulación",
+    "Rectificación de actividades",
+    "Recalificación de actividad",
+    "Cambio de carrera",
+    "Reubicación de salón",
+    "Cambio de ies"
+  ],
+  "Bienestar estudiantil": [
+    "Servicio odontológico",
+    "Servicio médico",
+    "Servicio psicológico",
+    "Servicio de nutrición",
+    "Servicio de trabajo social",
+    "Beca estudiantil",
+    "Cobertura seguro estudiantil",
+    "Gestión de inclusión y equidad académica",
+    "Reportar acoso, discriminación o violencia"
+  ],
+  "Consultas varias": [
+    "Consultas varias"
+  ],
+  "Financiero": [
+    "Valores a cancelar",
+    "Notas de crédito"
+  ],
+  "Idiomas/ofimatica": [
+    "Homologacion módulos ingles",
+    "Homologacion módulos de computacion",
+    "Inscripción a prueba de suficiencia",
+    "Inscripción a módulos",
+    "Servicio de biblioteca física y digital"
+  ],
+  "Vinculación": [
+    "Practicas preprofesionales",
+    "Proyectos de servicios comunitarios",
+    "Actividades extracurriculares"
+  ]
+}
+

@@ -1,0 +1,42 @@
+{% load vite %}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Balcón de servicios</title>
+
+  <!-- Bootstrap (si lo usas) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"/>
+
+  <!-- En dev: Vite HMR; en prod: assets compilados -->
+  {% vite_hmr_tags %}
+  {% vite_asset_tags %}
+
+  <style>
+    body{ background: #F3F5F9; color: #1C3247; }
+    .bg-sga{ background-color:#12216A !important; }
+    .bg-sga-2{ background-color:#FF6F1D !important; }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-dark bg-sga">
+    <div class="container-fluid">
+      <a class="navbar-brand fw-bold" href="/">e-campus</a>
+    </div>
+  </nav>
+  <div class="bg-sga-2" style="height:11px;"></div>
+
+  <!-- Punto de montaje de Svelte -->
+  <main class="container py-3">
+    <div id="svelte-app"></div>
+  </main>
+
+  <footer class="text-center py-3">
+    <small>Copyright © 2024 e-campus by UNEMI. Todos los derechos reservados.</small>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
