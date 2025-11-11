@@ -32,30 +32,59 @@ def responder_desde_pdfs(intent_text: str, incluir_fuente: bool = False, docs_ov
     except Exception:
         docs = []
     
-    # Recolectar TODOS los PDFs únicos de los docs
+    # Recolectar TODOS los PDFs únicos de los docs (incluyendo JSONs estructurados)
     source_pdfs = set()
+    source_images = set()
     pdf_name = "los documentos"
     
     if docs:
         for doc in docs:
-            pdf = None
-            if hasattr(doc, 'metadata') and doc.metadata.get('source_pdf'):
-                pdf = doc.metadata['source_pdf']
-            elif isinstance(doc, dict) and doc.get('metadata', {}).get('source_pdf'):
-                pdf = doc['metadata']['source_pdf']
+            # Obtener metadata
+            if hasattr(doc, 'metadata'):
+                metadata = doc.metadata
+            elif isinstance(doc, dict):
+                metadata = doc.get('metadata', {})
+            else:
+                metadata = {}
             
-            if pdf:
-                source_pdfs.add(pdf)
-                if not pdf_name or pdf_name == "los documentos":
-                    pdf_name = pdf
+            # Verificar si es un documento JSON estructurado
+            source_type = metadata.get('source_type', '')
+            
+            if source_type == 'json_structured':
+                # Documento JSON: puede tener archivo (PDF o imagen)
+                archivo = metadata.get('archivo', '')
+                titulo = metadata.get('titulo', '')
+                
+                if archivo:
+                    if archivo.endswith('.pdf'):
+                        source_pdfs.add(archivo)
+                        if not pdf_name or pdf_name == "los documentos":
+                            pdf_name = archivo
+                    elif archivo.endswith(('.png', '.jpg', '.jpeg')):
+                        source_images.add(archivo)
+                
+                # También agregar título como referencia
+                if titulo and (not pdf_name or pdf_name == "los documentos"):
+                    pdf_name = titulo
+            else:
+                # Documento PDF tradicional
+                pdf = metadata.get('source_pdf')
+                if pdf:
+                    source_pdfs.add(pdf)
+                    if not pdf_name or pdf_name == "los documentos":
+                        pdf_name = pdf
     
     # Limpiar nombre del PDF principal
     pdf_name_clean = pdf_name.replace(".pdf", "").replace("_", " ").replace("-", " ")
     
-    # Lista de PDFs fuente
+    # Lista de PDFs fuente (incluir también imágenes de JSONs)
     source_pdfs_list = sorted(list(source_pdfs))
+    source_images_list = sorted(list(source_images))
     
-    # Extraer texto de documentos
+    # Combinar PDFs e imágenes para la lista de fuentes
+    all_sources = source_pdfs_list + source_images_list
+    
+    # Extraer texto de documentos con metadatos (páginas)
     def format_docs(documents):
         if not documents:
             return "No se encontró contexto relevante."
@@ -63,12 +92,34 @@ def responder_desde_pdfs(intent_text: str, incluir_fuente: bool = False, docs_ov
         for i, d in enumerate(documents, start=1):
             if hasattr(d, "page_content"):
                 content = d.page_content
+                metadata = getattr(d, "metadata", {})
             elif isinstance(d, dict):
                 content = d.get("page_content", str(d))
+                metadata = d.get("metadata", {})
             else:
                 content = str(d)
-            # Sin número de página/fragmento en versión neutral
-            result.append(content)
+                metadata = {}
+            
+            # Incluir información de fuente
+            source_type = metadata.get("source_type", "")
+            page = metadata.get("page", metadata.get("page_number", None))
+            
+            # Determinar fuente según el tipo
+            if source_type == "json_structured":
+                # Documento JSON estructurado
+                titulo = metadata.get("titulo", "información estructurada")
+                archivo = metadata.get("archivo", "")
+                source_label = titulo
+                if archivo:
+                    source_label = f"{titulo} ({archivo})"
+                result.append(f"[Fuente: {source_label}]\n{content}")
+            else:
+                # Documento PDF tradicional
+                source_pdf = metadata.get("source_pdf", "documento")
+                if page is not None:
+                    result.append(f"[Fuente: {source_pdf}, Página {page}]\n{content}")
+                else:
+                    result.append(f"[Fuente: {source_pdf}]\n{content}")
         
         formatted = "\n\n".join(result)
         return formatted
@@ -98,8 +149,18 @@ Responde ESTRICTAMENTE en formato JSON con esta estructura:
 {{
   "has_information": true/false,
   "confidence": "high/medium/low",
-  "answer": "tu respuesta aquí"
+  "answer": "tu respuesta aquí",
+  "sources": [
+    {{"doc": "nombre_del_pdf.pdf", "page": 15}},
+    {{"doc": "otro_documento.pdf", "page": 23}}
+  ]
 }}
+
+IMPORTANTE SOBRE CITAS:
+- SIEMPRE debes incluir al menos una cita en "sources" con el nombre del documento y número de página
+- Si no puedes identificar la página exacta, usa el número de página más cercano del contexto
+- Si NO hay citas, la respuesta será RECHAZADA
+- Las citas deben corresponder a los documentos del contexto proporcionado
 
 Criterios para "has_information":
 - true: El contexto contiene información relevante, clara y útil para responder (incluso si es para decir que algo NO está permitido)
@@ -123,6 +184,7 @@ RESPONDE SOLO CON EL JSON, sin explicaciones adicionales:
         | StrOutputParser()
     )
     
+    respuesta_json = {}
     try:
         respuesta_raw = rag_chain.invoke(intent_text)
         
@@ -138,8 +200,14 @@ RESPONDE SOLO CON EL JSON, sin explicaciones adicionales:
             has_info = respuesta_json.get("has_information", True)
             llm_confidence = respuesta_json.get("confidence", "medium")
             respuesta_base = respuesta_json.get("answer", respuesta_raw)
+            sources = respuesta_json.get("sources", [])
             
-            print(f"📊 [LLM Self-Evaluation] has_info={has_info}, confidence={llm_confidence}")
+            # V2: Rechazar respuesta si no hay citas (P5)
+            if not sources or len(sources) == 0:
+                print("⚠️ [V2] Respuesta rechazada: no hay citas con páginas")
+                has_info = False  # Forzar handoff
+            
+            print(f"📊 [LLM Self-Evaluation] has_info={has_info}, confidence={llm_confidence}, sources={len(sources)}")
             
         except json.JSONDecodeError:
             # Si falla el parsing, asumir que tiene info y usar respuesta directa
@@ -186,22 +254,21 @@ RESPONDE SOLO CON EL JSON, sin explicaciones adicionales:
             respuesta_texto = respuesta_base
     
     # Retornar dict con respuesta, PDFs fuente y auto-evaluación del LLM
+    # Extraer sources de la respuesta JSON si están disponibles
+    sources_citations = []
+    try:
+        if 'respuesta_json' in locals() and respuesta_json and "sources" in respuesta_json:
+            sources_citations = respuesta_json.get("sources", [])
+    except:
+        pass
+    
     return {
         "respuesta": respuesta_texto,
-        "source_pdfs": source_pdfs_list,
+        "source_pdfs": source_pdfs_list,  # PDFs tradicionales
+        "source_images": source_images_list,  # Imágenes de JSONs estructurados
+        "all_sources": all_sources,  # Todas las fuentes (PDFs + imágenes)
         "has_information": has_info,  # Auto-evaluación del LLM
-        "llm_confidence": llm_confidence  # Confianza del LLM
+        "llm_confidence": llm_confidence,  # Confianza del LLM
+        "sources": sources_citations  # Citas con páginas (V2)
     }
-
-
-def responder_con_reglamento(intent_text: str) -> dict:
-    """
-    Responde usando el reglamento con RAG y SIEMPRE antepone:
-    'Según {nombre_pdf}: <respuesta>'
-    
-    Returns:
-        dict con "respuesta" y "source_pdfs"
-    """
-    # Wrapper sobre responder_desde_pdfs con incluir_fuente=True
-    return responder_desde_pdfs(intent_text, incluir_fuente=True)
 

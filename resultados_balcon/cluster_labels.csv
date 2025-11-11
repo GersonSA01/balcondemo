@@ -1,0 +1,9 @@
+cluster,label,top_terms
+0,admision_ingreso,"gracias buenas, saber, hoy, cupo, sede, me sale, pago, el pago, sufragio, planilla"
+1,soporte_sga_credenciales,"actividad test, la causal, causal, plataforma con, causal problemas, la observación, en plataforma, asignatura matemáticas, observación la, la actividad"
+2,cluster_enfermedad accidente_causal enfermedad,"enfermedad accidente, causal enfermedad, accidente con, actividad test, causal, la causal, la observación, propedéutico de, asignatura propedéutico, propedéutico"
+3,cluster_domicilio_domicilio fuera,"domicilio, domicilio fuera, sufragio, milagro, milagro domicilio, de milagro, fuera de, la ciudad, ciudad de, justificación"
+4,becas_maestrias_pagos,"semestre, exámenes, 2022, presencial, sede, atentamente, los exámenes, 09 2022, estudiante, lo expuesto"
+5,becas_maestrias_pagos,"planilla, sufragio, planilla de, semestre, elecciones, gracias buenas, las elecciones, presencial, domicilio, la ciudad"
+6,soporte_sga_credenciales,"actividad test, la causal, causal, plataforma con, causal problemas, en plataforma, la observación, plataforma asignatura, asignatura matemáticas, observación problemas"
+7,cluster_sufragio_planilla,"sufragio, planilla, planilla de, domicilio, elecciones, al sufragio, la ciudad, ciudad de, milagro, las elecciones"

@@ -16,24 +16,23 @@ from .intent_parser import (
     es_confirmacion_negativa,
     es_greeting
 )
-from .taxonomy import map_to_taxonomy
 from .answerability import answerability_score, gen_query_variants_llm
-from .pdf_responder import responder_con_reglamento, responder_desde_pdfs
+from .pdf_responder import responder_desde_pdfs
 from .query_planner import (
     plan_queries,
     rrf_fuse,
-    fuzzy_anchor_search,
-    get_section_anchors,
     detect_entities,
     route_by_entity,
 )
 from .hierarchical_router import hierarchical_candidates
-from .handoff import should_handoff, format_handoff_message
+from .handoff import should_handoff
 from .conversation_context import (
     enrich_query_with_context,
-    should_use_conversational_mode,
-    detect_follow_up_type
+    should_use_conversational_mode
 )
+from .deterministic_router import route_by_taxonomy, get_folders_for_family
+from .config import TAU_SKIP_CONFIRM
+from .json_retriever import get_json_retriever, search_structured_info, format_json_item_as_document
 
 
 # === INDUSTRIAL QUERY UNDERSTANDING ===
@@ -83,6 +82,30 @@ def _canonicalize_query(q: str) -> str:
     for pat, rep in _CANON_MAP:
         txt = re.sub(pat, rep, txt, flags=re.IGNORECASE)
     return txt.strip()
+
+def _obtener_primer_nombre(student_data: Dict = None) -> str:
+    """
+    Extrae el primer nombre del estudiante desde student_data.
+    
+    Args:
+        student_data: Diccionario con datos del estudiante
+    
+    Returns:
+        Primer nombre del estudiante o string vacío si no se encuentra
+    """
+    if not student_data:
+        return ""
+    try:
+        credenciales = student_data.get("credenciales", {})
+        nombre_completo = credenciales.get("nombre_completo") or credenciales.get("nombre") or ""
+        if nombre_completo and isinstance(nombre_completo, str):
+            partes = nombre_completo.strip().split()
+            if partes:
+                return partes[0]
+    except Exception:
+        pass
+    return ""
+
 
 def _expand_with_synonyms(q: str) -> list[str]:
     """Expande la query con sinónimos del dominio."""
@@ -251,7 +274,7 @@ def classify_with_rag(
             enriched_text = user_text  # Por defecto, usar texto original
             
             if context_evaluation["needs_context"]:
-                follow_up_type = detect_follow_up_type(context_evaluation)
+                follow_up_type = "follow_up" if context_evaluation["needs_context"] else "independent"
                 print(f"💬 [Conversational Mode] Activado - Tipo: {follow_up_type}")
                 print(f"   Confidence: {context_evaluation['confidence']}")
                 print(f"   Reason: {context_evaluation['reason']}")
@@ -315,7 +338,7 @@ def classify_with_rag(
                 else:
                     planned_queries = [canon_q]
                 
-                # ETAPA 4: Retrieval híbrido con RRF
+                # ETAPA 4: Retrieval híbrido con RRF (PDFs)
                 all_doc_lists = []
                 best_ascore = None
                 
@@ -343,6 +366,24 @@ def classify_with_rag(
                 else:
                     fused_docs = []
                 
+                # ETAPA 4.5: Búsqueda en JSONs estructurados
+                # Buscar en JSONs usando la query canónica y también el texto original del usuario
+                json_query = f"{canon_q} {user_text}".strip()
+                json_results = search_structured_info(json_query, min_score=0.3, max_results=5)
+                json_docs = [format_json_item_as_document(item) for item in json_results]
+                
+                if json_docs:
+                    print(f"📋 [JSON] Encontrados {len(json_docs)} resultados estructurados")
+                    # Combinar JSONs con PDFs (priorizar PDFs, luego JSONs)
+                    # Agregar JSONs al final de la lista fusionada
+                    fused_docs = fused_docs + json_docs
+                    # Si encontramos JSONs relevantes, aumentar ligeramente la confianza
+                    if best_ascore and json_docs:
+                        # Aumentar confianza si hay matches en JSONs (hasta 0.1 puntos)
+                        json_boost = min(len(json_docs) * 0.02, 0.1)
+                        best_ascore["confidence"] = min(best_ascore["confidence"] + json_boost, 1.0)
+                        print(f"📈 [JSON Boost] Confianza ajustada: {best_ascore['confidence']:.3f} (+{json_boost:.3f})")
+                
                 # ETAPA 5: Intentar expansión con sinónimos si baja confianza
                 if best_ascore["confidence"] < TAU_NORMA:
                     syn_variants = _expand_with_synonyms(canon_q)
@@ -362,10 +403,10 @@ def classify_with_rag(
                                 pass
                             print(f"  ✓ Mejor: '{q[:60]}...' → {ascore_syn['confidence']:.3f}")
                 
-                # ETAPA 6: Variantes LLM si aún bajo
+                # ETAPA 6: Variantes sin LLM (V2) - solo si aún bajo
                 if best_ascore["confidence"] < TAU_NORMA:
-                    print(f"🔎 [LLM-Variants] Generando reformulaciones...")
-                    qvars = gen_query_variants_llm(canon_q, n=3)
+                    print(f"🔎 [V2-Variants] Generando reformulaciones (sin LLM)...")
+                    qvars = gen_query_variants_llm(canon_q, n=3, use_llm=False)  # V2: sin LLM por defecto
                     for qv in qvars:
                         ascore_llm = answerability_score(qv, retr, k=12)
                         if ascore_llm["confidence"] > best_ascore["confidence"]:
@@ -380,31 +421,6 @@ def classify_with_rag(
                             except Exception:
                                 pass
                             print(f"  ✓ Mejor: '{qv[:60]}...' → {ascore_llm['confidence']:.3f}")
-                
-                # ETAPA 7: Safety net fuzzy si MUY baja confianza
-                if FEATURE_FLAGS.get("fuzzy_safety_net") and best_ascore["confidence"] < TAU_MIN:
-                    print(f"🆘 [Fuzzy Safety Net] Buscando anclas...")
-                    section_anchors = get_section_anchors()
-                    fuzzy_matches = fuzzy_anchor_search(canon_q, section_anchors, threshold=70, limit=3)
-                    
-                    if fuzzy_matches:
-                        print(f"  ✓ Encontradas {len(fuzzy_matches)} anclas fuzzy")
-                        # Buscar con las anclas encontradas
-                        for anchor, score in fuzzy_matches:
-                            try:
-                                docs_anchor = retr.invoke(anchor)
-                                if docs_anchor:
-                                    if FEATURE_FLAGS.get("rrf_fusion"):
-                                        all_doc_lists.append(docs_anchor)
-                                        fused_docs = rrf_fuse(all_doc_lists, k=12)
-                                    else:
-                                        fused_docs = docs_anchor[:12]
-                                    # Boost artificial al ascore
-                                    best_ascore["confidence"] = max(best_ascore["confidence"], 0.4)
-                                    print(f"    → '{anchor}' (fuzzy: {score})")
-                                    break
-                            except Exception:
-                                pass
                 
                 # Usar el mejor ascore y docs fusionados
                 ascore = best_ascore
@@ -469,10 +485,9 @@ def classify_with_rag(
                         
                         # Aceptar solo si el LLM evaluó que SÍ tiene información
                         if has_info:
-                            # Mapear a taxonomía para categoría
-                            mapping = map_to_taxonomy(intent_query)
-                            cat = mapping.get("categoria") or "Consultas varias"
-                            sub = mapping.get("subcategoria") or "Consultas varias"
+                            # Usar categorías por defecto (taxonomía se obtiene en handoff si es necesario)
+                            cat = "Reglamento"
+                            sub = "Consulta"
                             
                             # En Nivel 3: Si hay respuesta válida del PDF, NO derivar
                             # Solo derivar si es una intención CRÍTICA que requiere validación humana
@@ -553,10 +568,6 @@ def classify_with_rag(
                         pass  # Si falla, derivar
 
                 # Nivel 4: REALMENTE no hay nada (< TAU_MIN) → derivar al agente
-                mapping = map_to_taxonomy(intent_query)
-                cat = mapping.get("categoria") or "Consultas varias"
-                sub = mapping.get("subcategoria") or "Consultas varias"
-                
                 # Recuperar texto original de la consulta del usuario (antes de la confirmación)
                 original_user_query = intent_query  # Default: usar intent_query
                 for msg in reversed(conversation_history):
@@ -570,28 +581,36 @@ def classify_with_rag(
                 
                 print(f"📝 [Original Query] {original_user_query[:80]}...")
                 
-                # Evaluar handoff con lógica completa usando LLM
+                # Evaluar handoff con lógica completa usando LLM (FUSIONADO: ahora también devuelve categoria/subcategoria)
                 handoff_decision = should_handoff(
                     confidence=ascore["confidence"],
                     intent_short=intent_slots.get("intent_short", ""),
-                    category=cat,
-                    subcategory=sub,
+                    category=None,  # Se obtiene de la clasificación LLM fusionada
+                    subcategory=None,  # Se obtiene de la clasificación LLM fusionada
                     slots=intent_slots,
                     history=conversation_history,
                     user_text=original_user_query  # Texto ORIGINAL de la consulta, no la confirmación
                 )
                 
+                # Extraer categoria/subcategoria de la decisión de handoff (viene de classify_with_llm fusionada)
+                cat = handoff_decision.get("categoria") or "Consultas varias"
+                sub = handoff_decision.get("subcategoria") or "Consultas varias"
+                
                 # Mensaje de derivación directo y claro con información del canal LLM
-                channel = handoff_decision.get("handoff_channel", "Mesa de Ayuda SGA")
+                # Si no hay channel, usar departamento real por defecto
+                from .handoff import get_departamento_real
+                channel = handoff_decision.get("handoff_channel")
+                if not channel:
+                    # Obtener categoria/subcategoria de la decisión
+                    categoria_fallback = handoff_decision.get("categoria") or cat or "Consultas varias"
+                    subcategoria_fallback = handoff_decision.get("subcategoria") or sub or "Consultas varias"
+                    department_fallback = handoff_decision.get("department", "general")
+                    channel = get_departamento_real(categoria_fallback, subcategoria_fallback, department_fallback, original_user_query)
                 department = handoff_decision.get("department", "general")
                 llm_reasoning = handoff_decision.get("llm_reasoning", "")
                 
-                nombre_estudiante = ""
-                if student_data:
-                    nombre_estudiante = student_data.get("credenciales", {}).get("nombre_completo", "").split(' ')[0]
-                    saludo = f"{nombre_estudiante}, " if nombre_estudiante else ""
-                else:
-                    saludo = ""
+                # Obtener primer nombre del estudiante
+                primer_nombre = _obtener_primer_nombre(student_data)
                 
                 # Mensaje personalizado según el departamento
                 emoji_dept = {
@@ -604,13 +623,24 @@ def classify_with_rag(
                     "general": "💁"
                 }.get(department, "💁")
                 
+                # Construir mensaje final con saludo personalizado
+                if primer_nombre:
+                    mensaje_inicio = f"{primer_nombre}, "
+                else:
+                    mensaje_inicio = ""
+                
                 respuesta_final = (
-                    f"{saludo}no encontré información específica sobre tu consulta en la base de conocimiento.\n\n"
-                    f"✅ **He derivado tu solicitud a {channel}** {emoji_dept}\n\n"
+                    f"{mensaje_inicio}Su solicitud se ha transferido al departamento **{channel}**. {emoji_dept}\n\n"
                     f"Un agente especializado revisará tu caso y se pondrá en contacto contigo por correo electrónico "
                     f"en las próximas 24 horas.\n\n"
                     f"📧 **Mantente atento a tu correo institucional** para recibir la respuesta del agente."
                 )
+                
+                # Debug: verificar que el saludo esté en el mensaje
+                if primer_nombre:
+                    print(f"✅ [Saludo] Primer nombre '{primer_nombre}' incluido en mensaje de handoff")
+                else:
+                    print(f"⚠️ [Saludo] No se pudo obtener primer nombre (student_data disponible: {student_data is not None})")
                 
                 # Log para debugging
                 print(f"🎯 [Handoff Decision]")
@@ -678,8 +708,147 @@ def classify_with_rag(
                 "intent_slots": slots
             }
     else:
-        # 3. stage == ready → interpretar y confirmar
+        # 3. stage == ready → V2: Router determinista primero (P0)
+        # Intentar routing determinista (sin LLM)
+        category_det, subcategory_det, confidence_det = route_by_taxonomy(user_text)
+        
+        # Si confianza >= 0.90, saltar confirmación y ir directo a retrieval (P0)
+        if confidence_det >= TAU_SKIP_CONFIRM:
+            print(f"🚀 [V2 Router] Alta confianza ({confidence_det:.2f}), saltando confirmación")
+            # Construir query de intención desde routing determinista
+            intent_query = user_text.strip()
+            
+            # Obtener carpetas candidatas desde familia detectada
+            # (Necesitamos mapear categoría → familia, simplificado aquí)
+            folders_hint = []
+            if category_det:
+                # Mapeo simplificado (en producción, usar mapeo completo)
+                if "Academico" in category_det or "academico" in category_det.lower():
+                    folders_hint = ["unemi_interno/estudiantes"]
+                elif "Bienestar" in category_det:
+                    folders_hint = ["unemi_interno/estudiantes"]
+                elif "Idiomas" in category_det:
+                    folders_hint = ["unemi_interno/estudiantes", "unemi_interno/tic"]
+                else:
+                    folders_hint = ["unemi_interno/estudiantes"]
+            
+            # Ir directo a retrieval (sin confirmación)
+            try:
+                hierarchical_cands = hierarchical_candidates(user_text, entities=None, queries=None)
+                if folders_hint:
+                    hierarchical_cands["folders"] = folders_hint
+                
+                retr = get_retriever(
+                    files_hint=hierarchical_cands.get("files"),
+                    folders_hint=hierarchical_cands.get("folders")
+                )
+                
+                # Canonizar query
+                canon_q = _canonicalize_query(intent_query)
+                
+                # Retrieval con juez híbrido (V2)
+                ascore = answerability_score(canon_q, retr, k=12, use_hybrid=True)
+                print(f"📊 [V2] Answerability: {ascore.get('confidence', 0):.3f} (method: {ascore.get('method', 'N/A')})")
+                
+                # Recuperar docs
+                docs = retr.invoke(canon_q)
+                fused_docs = docs[:12] if docs else []
+                
+                # Buscar también en JSONs estructurados
+                json_query = f"{canon_q} {user_text}".strip()
+                json_results = search_structured_info(json_query, min_score=0.3, max_results=5)
+                json_docs = [format_json_item_as_document(item) for item in json_results]
+                
+                if json_docs:
+                    print(f"📋 [JSON Router] Encontrados {len(json_docs)} resultados estructurados")
+                    fused_docs = fused_docs + json_docs
+                    # Aumentar confianza si hay matches en JSONs
+                    if json_docs:
+                        json_boost = min(len(json_docs) * 0.02, 0.1)
+                        ascore["confidence"] = min(ascore["confidence"] + json_boost, 1.0)
+                
+                # Si alta confianza, responder directamente
+                if ascore["confidence"] >= TAU_NORMA:
+                    result = responder_desde_pdfs(canon_q, incluir_fuente=True, docs_override=fused_docs if fused_docs else None)
+                    respuesta_texto = result["respuesta"]
+                    
+                    # Agregar saludo si hay student_data
+                    primer_nombre = _obtener_primer_nombre(student_data)
+                    if primer_nombre and not respuesta_texto.startswith(primer_nombre):
+                        respuesta_texto = f"{primer_nombre}, {respuesta_texto}"
+                    
+                    return {
+                        "category": category_det or "Reglamento",
+                        "subcategory": subcategory_det or "Consulta",
+                        "confidence": ascore["confidence"],
+                        "summary": respuesta_texto,
+                        "source_pdfs": result.get("source_pdfs", []),
+                        "campos_requeridos": [],
+                        "needs_confirmation": False,
+                        "confirmed": True,
+                        "source_id": "pdf::deterministic_router",
+                        "mode": "normativo",
+                        "handoff": False,
+                        "intent_slots": {"intent_short": canon_q},
+                        "diagnostics": {
+                            "answerability": ascore,
+                            "method": "deterministic_router_high_conf",
+                            "router_confidence": confidence_det
+                        }
+                    }
+                # Si confianza media, intentar responder de todos modos
+                elif ascore["confidence"] >= TAU_MIN:
+                    result = responder_desde_pdfs(canon_q, incluir_fuente=True, docs_override=fused_docs if fused_docs else None)
+                    if result.get("has_information", True):
+                        respuesta_texto = result["respuesta"]
+                        
+                        # Agregar saludo si hay student_data
+                        primer_nombre = _obtener_primer_nombre(student_data)
+                        if primer_nombre and not respuesta_texto.startswith(primer_nombre):
+                            respuesta_texto = f"{primer_nombre}, {respuesta_texto}"
+                        
+                        return {
+                            "category": category_det or "Reglamento",
+                            "subcategory": subcategory_det or "Consulta",
+                            "confidence": ascore["confidence"],
+                            "summary": respuesta_texto,
+                            "source_pdfs": result.get("source_pdfs", []),
+                            "campos_requeridos": [],
+                            "needs_confirmation": False,
+                            "confirmed": True,
+                            "source_id": "pdf::deterministic_router",
+                            "mode": "normativo",
+                            "handoff": False,
+                            "intent_slots": {"intent_short": canon_q},
+                            "diagnostics": {
+                                "answerability": ascore,
+                                "method": "deterministic_router_medium_conf",
+                                "router_confidence": confidence_det
+                            }
+                        }
+            except Exception as e:
+                print(f"⚠️ [V2 Router] Error en retrieval directo: {e}")
+                # Fallback a flujo normal
+                pass
+        
+        # Si no se saltó confirmación, usar flujo normal (con LLM si es necesario)
         slots = interpretar_intencion_principal(user_text)
+        
+        # Si el router determinista encontró algo, usar esa categoría
+        if category_det and confidence_det >= 0.75:
+            return {
+                "category": category_det,
+                "subcategory": subcategory_det,
+                "confidence": confidence_det,
+                "summary": _confirm_text_from_slots(slots),
+                "campos_requeridos": [],
+                "needs_confirmation": True,
+                "confirmed": None,
+                "intent_slots": slots,
+                "diagnostics": {"router_confidence": confidence_det, "method": "deterministic_router_with_confirm"}
+            }
+        
+        # Flujo normal (sin match determinista claro)
         return {
             "category": None,
             "subcategory": None,

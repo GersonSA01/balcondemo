@@ -199,19 +199,6 @@ PREGUNTA REFORMULADA:"""
         return user_text
 
 
-def detect_follow_up_type(context_check: Dict[str, Any]) -> str:
-    """
-    Detecta el tipo de pregunta basándose en la evaluación de contexto.
-    
-    Args:
-        context_check: Resultado de needs_context()
-    
-    Returns:
-        "follow_up" | "independent"
-    """
-    if context_check["needs_context"]:
-        return "follow_up"
-    return "independent"
 
 
 def should_use_conversational_mode(

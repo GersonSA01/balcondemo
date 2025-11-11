@@ -1,17 +1,19 @@
 # app/services/answerability.py
-"""Juez de respondibilidad y cálculo de answerability score."""
+"""Juez de respondibilidad híbrido: heurístico + LLM solo en borderline (V2)."""
+from typing import List
 from langchain_core.prompts import ChatPromptTemplate
 from .config import llm
+from .heuristic_judge import heuristic_answerability_score
 
 
-def answerability_score(intent_query: str, retr, k: int = 8) -> dict:
+def answerability_score(intent_query: str, retr, k: int = 8, use_hybrid: bool = True) -> dict:
     """
-    Calcula un score robusto de respondibilidad basado en:
-    - Cobertura (#docs)
-    - Chars totales
-    - Similitud promedio top-k
-    - Margen entre doc1 y doc(k)
-    - Veredicto LLM ("answerable?")
+    Calcula score de respondibilidad usando juez híbrido (V2):
+    - Primero juez heurístico (rápido, sin LLM)
+    - Solo invoca LLM-judge si verdict == "borderline" (0.55-0.70)
+    
+    Args:
+        use_hybrid: Si True, usa juez híbrido. Si False, usa solo LLM (legacy).
     
     Devuelve dict con:
     - confidence: float [0,1]
@@ -20,14 +22,97 @@ def answerability_score(intent_query: str, retr, k: int = 8) -> dict:
     - sim_avg: float
     - sim_margin: float
     - verdict: str ("yes"|"no"|"unknown")
+    - method: str ("heuristic"|"hybrid"|"llm_only")
     """
     try:
         retrieved = retr.invoke(intent_query)
         docs = retrieved if isinstance(retrieved, list) else ([retrieved] if retrieved else [])
     except Exception:
         docs = []
+    
+    if not use_hybrid:
+        # Legacy: usar solo LLM (comportamiento anterior)
+        return _answerability_llm_only(intent_query, docs, k)
+    
+    # V2: Juez híbrido
+    # Paso 1: Juez heurístico (sin LLM)
+    heuristic_result = heuristic_answerability_score(intent_query, docs, k)
+    verdict_heuristic = heuristic_result["verdict"]
+    confidence_heuristic = heuristic_result["confidence"]
+    
+    # Paso 2: Solo invocar LLM si es "borderline"
+    if verdict_heuristic == "borderline":
+        # Caso borderline: necesitamos LLM para decidir
+        texts = []
+        for d in docs[:k]:
+            txt = getattr(d, "page_content", None) or (d.get("page_content") if isinstance(d, dict) else str(d))
+            txt = (txt or "").strip()
+            if txt:
+                texts.append(txt)
+        
+        if texts:
+            judge_sys = (
+                "Eres un juez que evalúa si el contexto permite responder una consulta académica/normativa.\n"
+                "Criterios:\n"
+                "- Si hay información relevante (artículos, procedimientos, plazos, requisitos), aunque sea parcial → YES\n"
+                "- Solo di NO si el contexto es completamente irrelevante o vacío\n"
+                "- Sé GENEROSO: si hay algo útil, di YES\n"
+                "Devuelve SOLO 'yes' o 'no'."
+            )
+            sample = "\n\n".join(texts[:5])
+            msgs = ChatPromptTemplate.from_messages([
+                ("system", judge_sys),
+                ("human", "Consulta:\n{q}\n\nContexto (extractos):\n{c}\n\n¿Se puede responder algo útil? (yes/no)")
+            ]).format_messages(q=intent_query, c=sample[:6000])
+            try:
+                out = llm.invoke(msgs)
+                verdict_raw = (getattr(out, "content", str(out)) or "").strip().lower()
+                verdict_llm = "yes" if "yes" in verdict_raw else ("no" if "no" in verdict_raw else "unknown")
+            except Exception:
+                verdict_llm = "yes" if texts else "no"
+            
+            # Ajustar confidence basado en veredicto LLM
+            if verdict_llm == "yes":
+                confidence = min(confidence_heuristic + 0.10, 0.85)  # Boost si LLM dice yes
+                verdict = "yes"
+            elif verdict_llm == "no":
+                confidence = max(confidence_heuristic - 0.15, 0.30)  # Penalizar si LLM dice no
+                verdict = "no"
+            else:
+                confidence = confidence_heuristic
+                verdict = "unknown"
+            
+            method = "hybrid"
+        else:
+            confidence = confidence_heuristic
+            verdict = "no"
+            method = "heuristic"
+    else:
+        # Caso claro: usar resultado heurístico directamente
+        confidence = confidence_heuristic
+        verdict = "yes" if verdict_heuristic == "high" else ("no" if verdict_heuristic == "low" else "unknown")
+        method = "heuristic"
+    
+    # Extraer señales para compatibilidad
+    non_empty = heuristic_result.get("non_empty_docs", 0)
+    total_chars = heuristic_result.get("total_chars", 0)
+    signals = heuristic_result.get("signals", {})
+    sim_avg = signals.get("similarity", 0.0)
+    sim_margin = signals.get("margin", 0.0)
+    
+    return {
+        "confidence": confidence,
+        "non_empty_docs": non_empty,
+        "total_chars": total_chars,
+        "sim_avg": sim_avg,
+        "sim_margin": sim_margin,
+        "verdict": verdict,
+        "method": method
+    }
 
-    # Señales objetivas
+
+def _answerability_llm_only(intent_query: str, docs: List, k: int) -> dict:
+    """Versión legacy: solo LLM (sin heurística)."""
     texts, sims = [], []
     for d in docs[:k]:
         txt = getattr(d, "page_content", None)
@@ -40,7 +125,6 @@ def answerability_score(intent_query: str, retr, k: int = 8) -> dict:
             continue
         texts.append(txt)
         
-        # Similaridad si está disponible
         s = 0.0
         try:
             md = getattr(d, "metadata", {})
@@ -56,7 +140,6 @@ def answerability_score(intent_query: str, retr, k: int = 8) -> dict:
     sim_avg = sum(sims)/len(sims) if sims else 0.0
     sim_margin = (sims[0] - sims[-1]) if len(sims) >= 2 else (sims[0] if sims else 0.0)
 
-    # Veredicto LLM mejorado
     verdict = "unknown"
     if texts:
         judge_sys = (
@@ -79,10 +162,7 @@ def answerability_score(intent_query: str, retr, k: int = 8) -> dict:
         except Exception:
             verdict = "yes" if texts else "no"
 
-    # Mezcla ponderada para confidence [0,1]
     w_docs, w_chars, w_sim, w_margin, w_verdict = 0.15, 0.15, 0.25, 0.15, 0.30
-    
-    # Normalizaciones
     n_docs = min(non_empty/4.0, 1.0)
     n_chars = min(total_chars/2400.0, 1.0)
     n_sim = sim_avg
@@ -104,12 +184,24 @@ def answerability_score(intent_query: str, retr, k: int = 8) -> dict:
         "total_chars": total_chars,
         "sim_avg": sim_avg,
         "sim_margin": sim_margin,
-        "verdict": verdict
+        "verdict": verdict,
+        "method": "llm_only"
     }
 
 
-def gen_query_variants_llm(original_query: str, n: int = 4) -> list[str]:
-    """Genera múltiples reformulaciones de la query para expansión."""
+def gen_query_variants_llm(original_query: str, n: int = 4, use_llm: bool = False) -> list[str]:
+    """
+    Genera múltiples reformulaciones de la query.
+    
+    V2: Por defecto usa expansión sin LLM (más rápido).
+    Solo usa LLM si use_llm=True explícitamente.
+    """
+    # V2: Expansión sin LLM por defecto
+    if not use_llm:
+        from .deterministic_router import expand_query_with_synonyms
+        return expand_query_with_synonyms(original_query)[:n]
+    
+    # Legacy: Expansión con LLM (solo si se solicita explícitamente)
     sys = (
         "Eres un experto en reformular consultas académicas desde diferentes ángulos.\n\n"
         "EJEMPLO:\n"

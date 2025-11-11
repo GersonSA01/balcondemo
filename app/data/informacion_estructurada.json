@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "titulo": "Certificados Académicos Pregrado",
+      "descripcion": "BUEN DÍA ESTIMADO/A ESTUDIANTE, PARA OBTENER LOS CERTIFICADOS SOLICITADOS, LE INVITAMOS A INGRESAR AL SGA, MÓDULO SERVICIOS DE SECRETARIA, Y UNA VEZ DENTRO DEL MÓDULO SELECCIONE \"CERTIFICADOS ACADÉMICOS PREGRADO\", A CONTINUACIÓN PODRÁ VISUALIZAR EL VARIADO ABANICO DE CERTIFICADOS OFERTADOS POR LA INSTITUCIÓN, SUBDIVIDIDOS POR: EXTERNOS, INTERNOS Y PERSONALIZADOS. SI REQUIERE DE CERTIFICADOS DE SEMESTRES ANTERIORES, SELECCIONE EL TIPO DE SOLICITUD Y DE CLIC EN EL PERIODO ACADÉMICO MOSTRADO EN LA PARTE INFERIOR (ADJUNTAMOS UN SCREENSHOT DONDE PODRÁ REFERENCIARSE), LUEGO DE ESTO, ENCUENTRE SU CERTIFICADO CON EL BUSCADOR.",
+      "archivo": "images/certificados_academicos_pregrado.png",
+      "categorias": ["certificados", "académicos", "pregrado", "SGA"],
+      "palabras_clave": [
+        "certificados académicos",
+        "certificados pregrados",
+        "SGA",
+        "servicios de secretaria",
+        "certificados externos",
+        "certificados internos",
+        "certificados personalizados",
+        "semestres anteriores",
+        "periodo académico",
+        "descargar certificado",
+        "obtener certificado"
+      ]
+    }
+  ]
+}
+

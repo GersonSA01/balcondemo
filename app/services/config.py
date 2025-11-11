@@ -41,10 +41,11 @@ llm = ChatGoogleGenerativeAI(
     max_retries=2,
 )
 
-# Umbrales de confianza para answerability
-TAU_NORMA = 0.70    # Si >= ⇒ respondemos con alta confianza (aumentado para ser más selectivo)
-TAU_EXPAND = 0.30   # Si entre 0.30 y 0.70 ⇒ intentamos expansión (bajado para activar más)
-TAU_MIN = 0.20      # Si >= 0.20 ⇒ responde aunque sea con baja confianza, SOLO deriva si < 0.20
+# Umbrales de confianza para answerability (V2 optimizados)
+TAU_NORMA = 0.72    # Si >= ⇒ respondemos con alta confianza (aumentado para early-exit)
+TAU_EXPAND = 0.30   # Si entre 0.30 y 0.70 ⇒ intentamos expansión
+TAU_MIN = 0.50      # Si >= 0.50 ⇒ responde aunque sea con baja confianza, SOLO deriva si < 0.50 (aumentado para menos handoffs)
+TAU_SKIP_CONFIRM = 0.90  # Si >= 0.90 ⇒ saltar confirmación y ir directo a retrieval
 
 # Feature Flags para capas de Query Understanding
 FEATURE_FLAGS = {

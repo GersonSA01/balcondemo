@@ -132,33 +132,37 @@ def chat_api(request):
     # Extraer respuesta
     reply = result.get("summary", "No pude procesar tu solicitud.")
     
-    # Limpiar respuesta de markdown si viene del LLM
+    # Debug: verificar contenido antes de limpiar
+    if student_data:
+        nombre_esperado = student_data.get("credenciales", {}).get("nombre_completo", "").split()[0] if student_data.get("credenciales", {}).get("nombre_completo") else ""
+        if nombre_esperado:
+            print(f"🔍 [Views] Nombre esperado en saludo: '{nombre_esperado}'")
+            print(f"🔍 [Views] Reply contiene nombre?: {nombre_esperado in reply}")
+            print(f"🔍 [Views] Primeros 100 chars de reply: '{reply[:100]}'")
+    
+    # Limpiar respuesta de markdown si viene del LLM (solo asteriscos, NO afecta el saludo)
     reply = reply.replace("**", "").strip()
     
-    # Si hay handoff automático, crear ticket silenciosamente
-    ticket_id = None
+    # Debug: verificar después de limpiar
+    if student_data:
+        nombre_esperado = student_data.get("credenciales", {}).get("nombre_completo", "").split()[0] if student_data.get("credenciales", {}).get("nombre_completo") else ""
+        if nombre_esperado:
+            print(f"🔍 [Views] Después de limpiar markdown - Reply contiene nombre?: {nombre_esperado in reply}")
+            print(f"🔍 [Views] Primeros 100 chars después: '{reply[:100]}'")
+    
+    # Si hay handoff automático, solo loguear (sin crear ticket)
     if result.get("handoff_auto"):
         try:
             import time
-            import random
             
-            ticket_id = f"TKT-{int(time.time())}-{random.randint(1000, 9999)}"
-            
-            # Extraer info del estudiante
+            # Extraer info del estudiante para logging
             nombre = student_data.get("credenciales", {}).get("nombre_completo", "Usuario") if student_data else "Usuario"
             matricula = student_data.get("informacion_academica", {}).get("matricula", "N/A") if student_data else "N/A"
             email = student_data.get("credenciales", {}).get("correo", "no-email@unemi.edu.ec") if student_data else "no-email@unemi.edu.ec"
             
-            # Construir resumen de conversación
-            recent_messages = conversation_history[-5:] if len(conversation_history) > 5 else conversation_history
-            conversation_summary = "\n\n".join([
-                f"{'👤 Usuario' if msg.get('who') == 'user' else '🤖 Bot'}: {msg.get('text', '')[:200]}..."
-                for msg in recent_messages
-            ])
-            
-            # Log del ticket
+            # Log de derivación (sin ticket)
             print(f"\n{'='*60}")
-            print(f"🎫 TICKET AUTOMÁTICO CREADO: {ticket_id}")
+            print(f"📤 DERIVACIÓN AUTOMÁTICA A AGENTE")
             print(f"{'='*60}")
             print(f"📅 Fecha: {time.strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"👤 Estudiante: {nombre} ({matricula})")
@@ -166,15 +170,10 @@ def chat_api(request):
             print(f"📂 Categoría: {result.get('category')} › {result.get('subcategory')}")
             print(f"🏢 Canal: {result.get('handoff_channel')}")
             print(f"📊 Motivo: {result.get('handoff_reason')}")
-            print(f"\n💬 Resumen de conversación:")
-            print(conversation_summary)
             print(f"{'='*60}\n")
             
-            # Agregar ticket ID al mensaje
-            reply = f"{reply}\n\n🎫 **Ticket #{ticket_id}** creado automáticamente."
-            
         except Exception as e:
-            print(f"⚠️ Error al crear ticket automático: {e}")
+            print(f"⚠️ Error al registrar derivación: {e}")
 
     return JsonResponse({
         "message": reply,
@@ -191,7 +190,6 @@ def chat_api(request):
         "handoff_auto": result.get("handoff_auto", False),
         "handoff_reason": result.get("handoff_reason"),
         "handoff_channel": result.get("handoff_channel"),
-        "ticket_id": ticket_id,
     }, status=200)
 
 
@@ -212,131 +210,33 @@ def serve_pdf(request, pdf_path):
         if not str(full_path).startswith(str(data_dir)):
             raise Http404("Ruta no permitida")
         
-        # Verificar que el archivo existe y es PDF
+        # Verificar que el archivo existe
         if not full_path.exists() or not full_path.is_file():
-            raise Http404("PDF no encontrado")
+            raise Http404("Archivo no encontrado")
         
-        if not full_path.suffix.lower() == '.pdf':
-            raise Http404("Solo se permiten archivos PDF")
+        # Determinar content_type según extensión
+        suffix = full_path.suffix.lower()
+        content_types = {
+            '.pdf': 'application/pdf',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+        }
+        
+        content_type = content_types.get(suffix, 'application/octet-stream')
         
         # Servir el archivo
         return FileResponse(
             open(full_path, 'rb'),
-            content_type='application/pdf',
+            content_type=content_type,
             as_attachment=False,  # False = abrir en navegador, True = descargar
             filename=full_path.name
         )
     except Http404 as e:
         return JsonResponse({"error": str(e)}, status=404)
     except Exception as e:
-        return JsonResponse({"error": f"Error al servir PDF: {str(e)}"}, status=500)
+        return JsonResponse({"error": f"Error al servir archivo: {str(e)}"}, status=500)
 
 
-@csrf_exempt
-def create_ticket(request):
-    """
-    Endpoint para crear tickets de soporte cuando se requiere handoff a agente humano.
-    
-    Request Body:
-    {
-        "category": "Académico",
-        "subcategory": "Matriculación",
-        "student_data": {...},
-        "conversation": [...],
-        "handoff_reason": "baja_confianza<0.42",
-        "handoff_channel": "Mesa de Ayuda SGA"
-    }
-    
-    Response:
-    {
-        "ticket_id": "TKT-2024-001234",
-        "channel": "Mesa de Ayuda SGA",
-        "status": "created",
-        "message": "Ticket creado exitosamente"
-    }
-    """
-    if request.method != "POST":
-        return JsonResponse({"error": "POST only"}, status=405)
-    
-    try:
-        payload = json.loads(request.body.decode("utf-8"))
-        
-        category = payload.get("category", "Consultas varias")
-        subcategory = payload.get("subcategory", "Consultas varias")
-        student_data = payload.get("student_data", {})
-        conversation = payload.get("conversation", [])
-        handoff_reason = payload.get("handoff_reason", "")
-        handoff_channel = payload.get("handoff_channel", "Mesa de Ayuda SGA")
-        
-        # Extraer información del estudiante
-        nombre = student_data.get("credenciales", {}).get("nombre_completo", "Usuario")
-        matricula = student_data.get("informacion_academica", {}).get("matricula", "N/A")
-        email = student_data.get("credenciales", {}).get("correo", "no-email@unemi.edu.ec")
-        
-        # Generar ticket ID único (timestamp + random)
-        import time
-        import random
-        ticket_id = f"TKT-{int(time.time())}-{random.randint(1000, 9999)}"
-        
-        # Construir resumen de conversación (últimos 5 mensajes)
-        recent_messages = conversation[-5:] if len(conversation) > 5 else conversation
-        conversation_summary = "\n\n".join([
-            f"{'👤 Usuario' if msg.get('who') == 'user' else '🤖 Bot'}: {msg.get('text', '')[:200]}..."
-            for msg in recent_messages
-        ])
-        
-        # Log del ticket (en producción, aquí insertarías en BD)
-        ticket_data = {
-            "ticket_id": ticket_id,
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "category": category,
-            "subcategory": subcategory,
-            "channel": handoff_channel,
-            "student": {
-                "nombre": nombre,
-                "matricula": matricula,
-                "email": email
-            },
-            "handoff_reason": handoff_reason,
-            "conversation_summary": conversation_summary,
-            "status": "pending",
-            "priority": "normal"
-        }
-        
-        # Log en consola (desarrollo)
-        print(f"\n{'='*60}")
-        print(f"🎫 NUEVO TICKET CREADO: {ticket_id}")
-        print(f"{'='*60}")
-        print(f"📅 Fecha: {ticket_data['created_at']}")
-        print(f"👤 Estudiante: {nombre} ({matricula})")
-        print(f"📧 Email: {email}")
-        print(f"📂 Categoría: {category} › {subcategory}")
-        print(f"🏢 Canal: {handoff_channel}")
-        print(f"📊 Motivo: {handoff_reason}")
-        print(f"\n💬 Resumen de conversación:")
-        print(conversation_summary)
-        print(f"{'='*60}\n")
-        
-        # En producción, guardar en base de datos:
-        # Ticket.objects.create(**ticket_data)
-        
-        # También podrías enviar email/notificación aquí:
-        # send_ticket_notification(ticket_data)
-        
-        return JsonResponse({
-            "ticket_id": ticket_id,
-            "channel": handoff_channel,
-            "status": "created",
-            "message": "Ticket creado exitosamente. Un agente te contactará pronto.",
-            "estimated_response_time": "24 horas",
-            "contact_methods": ["correo electrónico", "portal SGA"]
-        }, status=201)
-        
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "JSON inválido"}, status=400)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return JsonResponse({
-            "error": f"Error al crear ticket: {str(e)}"
-        }, status=500)
