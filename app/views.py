@@ -3,7 +3,7 @@ from django.http import JsonResponse, FileResponse, Http404
 from django.views.decorators.csrf import csrf_exempt
 import json
 from pathlib import Path
-from .services.rag_chat_service import classify_with_rag
+from .services.privategpt_chat_service import classify_with_privategpt
 import os
 
 def balcon_view(request):
@@ -197,10 +197,10 @@ def chat_api(request):
         traceback.print_exc()
         return JsonResponse({"error": f"Error al procesar la solicitud: {str(e)}"}, status=400)
 
-    # Usar el nuevo servicio RAG
+    # Usar el servicio PrivateGPT
     try:
-        # Pasar contexto adicional al servicio RAG (incluyendo archivo si existe)
-        result = classify_with_rag(
+        # Pasar contexto adicional al servicio PrivateGPT (incluyendo archivo si existe)
+        result = classify_with_privategpt(
             text, 
             conversation_history,
             category=category,
@@ -250,7 +250,8 @@ def chat_api(request):
         }, status=500)
 
     # Extraer respuesta
-    reply = result.get("summary", "No pude procesar tu solicitud.")
+    # Buscar "summary" (formato de classify_with_privategpt) o "response" (formato directo de PrivateGPT)
+    reply = result.get("summary") or result.get("response") or "No pude procesar tu solicitud."
     
     # Debug: verificar contenido antes de limpiar
     if student_data:
@@ -277,7 +278,8 @@ def chat_api(request):
         pass
 
     return JsonResponse({
-        "message": reply,
+        "message": reply,  # Campo legacy para compatibilidad
+        "response": reply,  # Campo nuevo (formato PrivateGPT) - mismo contenido que message
         "category": result.get("category"),
         "subcategory": result.get("subcategory"),
         "confidence": result.get("confidence", 0.7),
@@ -286,49 +288,59 @@ def chat_api(request):
         "confirmed": result.get("confirmed", None),
         "intent_slots": result.get("intent_slots"),  # Incluir slots para el historial
         "evidence": [],  # Ya no usamos evidence separada, está integrada en la respuesta RAG
-        "source_pdfs": result.get("source_pdfs", []),  # PDFs fuente
+        "source_pdfs": result.get("source_pdfs", []),  # PDFs fuente (nombres de archivos)
+        "fuentes": result.get("fuentes", []),  # Fuentes completas con archivo y página [{"archivo": str, "pagina": str}]
+        "has_information": result.get("has_information", False),  # Si se encontró información en los documentos
+        "needs_related_request_selection": result.get("needs_related_request_selection", False),  # Si necesita selección de solicitud relacionada
+        "related_requests": result.get("related_requests", []),  # Lista de solicitudes relacionadas
+        "no_related_request_option": result.get("no_related_request_option", False),  # Si se debe mostrar opción "No hay solicitud relacionada"
         "handoff": result.get("handoff", False),
-        "handoff_auto": result.get("handoff_auto", False),
-        "handoff_sent": result.get("handoff_sent", False),  # Nuevo flag para handoff enviado
-        "needs_handoff_details": result.get("needs_handoff_details", False),  # Flag para pedir más detalles
-        "needs_handoff_file": result.get("needs_handoff_file", False),  # Flag para requerir archivo
-        "handoff_file_max_size_mb": result.get("handoff_file_max_size_mb", 4),  # Tamaño máximo del archivo
-        "handoff_file_types": result.get("handoff_file_types", []),  # Tipos de archivo permitidos
         "handoff_reason": result.get("handoff_reason"),
         "handoff_channel": result.get("handoff_channel"),
-        "close_chat": result.get("close_chat", False),  # Flag para cerrar el chat
-        # Nuevos campos para solicitudes relacionadas
-        "needs_related_request_selection": result.get("needs_related_request_selection", False),
-        "needs_related_request_confirmation": result.get("needs_related_request_confirmation", False),
-        "needs_more_details": result.get("needs_more_details", False),
-        "related_requests": result.get("related_requests", []),
-        "no_related_request_option": result.get("no_related_request_option", False),
-        "selected_related_request_id": result.get("selected_related_request_id"),
-        "selected_related_request": result.get("selected_related_request"),
-        "reasoning": result.get("reasoning"),
+        "handoff_sent": result.get("handoff_sent", False),
+        "needs_handoff_details": result.get("needs_handoff_details", False),
+        "needs_handoff_file": result.get("needs_handoff_file", False),
+        "handoff_file_max_size_mb": result.get("handoff_file_max_size_mb", 4),
+        "handoff_file_types": result.get("handoff_file_types", []),
+        "department": result.get("department"),  # Departamento al que se deriva
+        "thinking_status": result.get("thinking_status"),  # Estado de pensamiento dinámico
     }, status=200)
 
 
 def serve_pdf(request, pdf_path):
-    """Endpoint para servir PDFs desde app/data con navegación en subdirectorios."""
+    """
+    Endpoint para servir PDFs desde la carpeta PDF (raíz) o app/data.
+    Prioridad: 1. Carpeta PDF, 2. app/data
+    """
     if request.method != "GET":
         return JsonResponse({"error": "GET only"}, status=405)
     
     try:
-        # Construir path seguro dentro de app/data
-        data_dir = Path(__file__).resolve().parent / "data"
-        
         # Normalizar y validar path (evitar directory traversal)
         requested_path = Path(pdf_path).as_posix()  # Normalizar barras
-        full_path = (data_dir / requested_path).resolve()
+        file_name = Path(requested_path).name  # Solo el nombre del archivo
         
-        # Verificar que el path esté dentro de data_dir
-        if not str(full_path).startswith(str(data_dir)):
-            raise Http404("Ruta no permitida")
+        # Opción 1: Buscar en la carpeta PDF (raíz del proyecto)
+        pdf_dir = Path(__file__).resolve().parent.parent / "PDF"
+        full_path_pdf = (pdf_dir / file_name).resolve()
         
-        # Verificar que el archivo existe
-        if not full_path.exists() or not full_path.is_file():
-            raise Http404("Archivo no encontrado")
+        # Opción 2: Buscar en app/data con subdirectorios
+        data_dir = Path(__file__).resolve().parent / "data"
+        full_path_data = (data_dir / requested_path).resolve()
+        
+        # Determinar qué archivo usar
+        full_path = None
+        if pdf_dir.exists() and full_path_pdf.exists() and full_path_pdf.is_file():
+            # Verificar que esté dentro de pdf_dir (seguridad)
+            if str(full_path_pdf).startswith(str(pdf_dir)):
+                full_path = full_path_pdf
+        elif data_dir.exists() and full_path_data.exists() and full_path_data.is_file():
+            # Verificar que esté dentro de data_dir (seguridad)
+            if str(full_path_data).startswith(str(data_dir)):
+                full_path = full_path_data
+        
+        if not full_path:
+            raise Http404(f"Archivo no encontrado: {file_name}")
         
         # Determinar content_type según extensión
         suffix = full_path.suffix.lower()

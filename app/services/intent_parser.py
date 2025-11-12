@@ -153,3 +153,26 @@ def es_greeting(text: str) -> bool:
             return True
     return False
 
+
+def obtener_primer_nombre(student_data: dict = None) -> str:
+    """
+    Extrae el primer nombre del estudiante desde los datos del estudiante.
+    
+    Args:
+        student_data: Diccionario con datos del estudiante, debe contener
+                     credenciales.nombre_completo o credenciales.nombre
+    
+    Returns:
+        Primer nombre del estudiante o string vacío si no se encuentra
+    """
+    if not student_data:
+        return ""
+    try:
+        credenciales = student_data.get("credenciales", {})
+        nombre_completo = credenciales.get("nombre_completo") or credenciales.get("nombre") or ""
+        if nombre_completo:
+            return nombre_completo.split()[0]
+    except Exception:
+        pass
+    return ""
+

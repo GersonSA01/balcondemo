@@ -60,6 +60,9 @@ FEATURE_FLAGS = {
 # Directorios
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
+# PrivateGPT API Configuration
+PRIVATEGPT_API_URL = os.getenv("PRIVATEGPT_API_URL", "http://localhost:8001")
+
 # Rate-limit guard para evitar 429 (respeta 'retry in N seconds' si está presente)
 import re
 import asyncio

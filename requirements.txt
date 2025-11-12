@@ -36,5 +36,8 @@ pypdf>=3.0.0
 # Otros
 typing-extensions>=4.0.0  # Para type hints avanzados en Python 3.9
 
+# HTTP Client para PrivateGPT API
+requests>=2.31.0
+
 
 

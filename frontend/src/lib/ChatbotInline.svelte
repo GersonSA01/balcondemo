@@ -11,12 +11,16 @@
   let needsConfirmation = false;
   let needsRelatedRequestSelection = false;
   let relatedRequests = [];
+  let selectedRelatedRequestId = "none"; // ID de la solicitud relacionada seleccionada (por defecto "none")
   let abortController = null;
   let conversationBlocked = false; // Flag para bloquear conversación después de handoff automático
   let needsHandoffFile = false; // Flag para mostrar input de archivo
   let selectedFile = null; // Archivo seleccionado
   let fileInputRef = null; // Referencia al input de archivo
-
+  let thinkingStatus = "Pensando"; // Estado dinámico del mensaje de pensamiento
+  let thinkingInterval = null; // Intervalo para actualizar el estado dinámico
+  let thinkingKey = 0; // Key para forzar re-render y animación suave
+  
   // Función exportada para recibir categoría desde el padre
   export function selectCategory(category, subcategory, dataEstudiante = null) {
     currentCategory = category;
@@ -29,6 +33,7 @@
     needsConfirmation = false;
     needsRelatedRequestSelection = false;
     relatedRequests = [];
+    selectedRelatedRequestId = "none";
     
     queueMicrotask(() => {
       const el = document.getElementById("chat-body-inline");
@@ -121,6 +126,9 @@
     needsRelatedRequestSelection = false;
     abortController = new AbortController();
     
+    // Después de seleccionar solicitud relacionada, buscar en documentos
+    startDocumentSearch();
+    
     const response = requestId ? requestId : "no hay solicitud relacionada";
     
     let userMessage = "No hay solicitud relacionada";
@@ -161,13 +169,29 @@
         signal: abortController.signal
       });
       const data = await res.json();
-      const reply = data.message || "No pude entenderte, ¿puedes reformular?";
+      
+      // Actualizar el estado de pensamiento según la respuesta del backend
+      if (data.thinking_status) {
+        stopThinkingStatusUpdate();
+        thinkingStatus = data.thinking_status;
+      } else {
+        stopThinkingStatusUpdate();
+        if (data.needs_related_request_selection) {
+          startRelatedRequestsSearch();
+        } else if (data.has_information || data.source_pdfs || data.fuentes) {
+          startDocumentSearch();
+        }
+      }
+      
+      // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
+      const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
       messages = [...messages, { who:"bot", text: reply, meta: data }];
       
       needsConfirmation = data.needs_confirmation || false;
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
+        selectedRelatedRequestId = "none"; // Resetear selección a "No hay solicitud relacionada" cuando se reciben nuevas solicitudes
       }
       
       // Detectar si se necesita más detalles de handoff (para solicitudes relacionadas también)
@@ -200,6 +224,8 @@
       messages = [...messages, { who:"bot", text:"Ocurrió un problema al procesar tu solicitud." }];
     }finally{
       sending = false;
+      thinkingStatus = "Pensando"; // Resetear al estado por defecto
+      stopThinkingStatusUpdate(); // Asegurar que se detenga el intervalo
       abortController = null;
       queueMicrotask(() => {
         const el = document.getElementById("chat-body-inline");
@@ -224,7 +250,60 @@
     sending = true;
     abortController = new AbortController();
     
+    // Iniciar con interpretación de intención
+    startIntentParsing();
+    
     await processMessage(text);
+    
+    // Detener actualización dinámica
+    stopThinkingStatusUpdate();
+  }
+  
+  // Función para interpretar intención - solo muestra "Entendiendo el requerimiento del usuario"
+  function startIntentParsing() {
+    thinkingKey += 1; // Forzar re-render para animación suave
+    thinkingStatus = "Entendiendo el requerimiento del usuario";
+    // No necesita intervalo, solo un estado
+  }
+  
+  // Función para buscar solicitudes relacionadas - muestra dos estados
+  function startRelatedRequestsSearch() {
+    let elapsed = 0;
+    thinkingInterval = setInterval(() => {
+      elapsed += 1;
+      thinkingKey += 1; // Forzar re-render para animación suave
+      if (elapsed < 3) {
+        thinkingStatus = "Buscando solicitudes relacionadas";
+      } else {
+        thinkingStatus = "Pensando en una explicación para el usuario";
+      }
+    }, 1000);
+  }
+  
+  // Función para buscar en documentos (RAG) - alterna entre dos estados (por tiempo)
+  function startDocumentSearch() {
+    let elapsed = 0;
+    thinkingInterval = setInterval(() => {
+      elapsed += 1;
+      thinkingKey += 1; // Forzar re-render para animación suave
+      // Alternar entre los dos estados cada 3 segundos para que no sea tan repetitivo
+      const ragStates = ["Buscando documentos", "Leyendo para dar una mejor respuesta"];
+      const index = Math.floor(elapsed / 3) % ragStates.length;
+      thinkingStatus = ragStates[index];
+    }, 1000);
+  }
+  
+  // Función genérica (mantener por compatibilidad, pero no se usará)
+  function startThinkingStatusUpdate() {
+    // Por defecto, usar búsqueda de documentos
+    startDocumentSearch();
+  }
+  
+  function stopThinkingStatusUpdate() {
+    if (thinkingInterval) {
+      clearInterval(thinkingInterval);
+      thinkingInterval = null;
+    }
   }
 
   async function processMessage(text) {
@@ -282,13 +361,35 @@
         signal: abortController.signal
       });
       const data = await res.json();
-      const reply = data.message || "No pude entenderte, ¿puedes reformular?";
+      
+      // Actualizar el estado de pensamiento según la respuesta del backend
+      // Si el backend envía thinking_status, usarlo directamente
+      if (data.thinking_status) {
+        stopThinkingStatusUpdate(); // Detener cualquier actualización anterior
+        thinkingStatus = data.thinking_status;
+      } else {
+        // Si no viene thinking_status, detectar según el tipo de respuesta
+        stopThinkingStatusUpdate(); // Detener cualquier actualización anterior
+        
+        if (data.needs_related_request_selection) {
+          // Si necesita selección de solicitudes relacionadas, usar esa función
+          startRelatedRequestsSearch();
+        } else if (data.has_information || data.source_pdfs || data.fuentes) {
+          // Si tiene información o fuentes, está buscando en documentos
+          startDocumentSearch();
+        }
+        // Si necesita confirmación, mantener "Entendiendo el requerimiento del usuario"
+      }
+      
+      // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
+      const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
       messages = [...messages, { who:"bot", text: reply, meta: data }];
       
       needsConfirmation = data.needs_confirmation || false;
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
+        selectedRelatedRequestId = "none"; // Resetear selección a "No hay solicitud relacionada" cuando se reciben nuevas solicitudes
       }
       
       // Detectar handoff enviado y cerrar chat
@@ -336,6 +437,8 @@
       messages = [...messages, { who:"bot", text:"Ocurrió un problema al procesar tu solicitud." }];
     } finally {
       sending = false;
+      thinkingStatus = "Pensando"; // Resetear al estado por defecto
+      stopThinkingStatusUpdate(); // Asegurar que se detenga el intervalo
       abortController = null;
       queueMicrotask(() => {
         const el = document.getElementById("chat-body-inline");
@@ -380,6 +483,14 @@
     const response = confirmed ? "si" : "no";
     abortController = new AbortController();
     
+    // Si el usuario confirma, iniciar búsqueda de solicitudes relacionadas
+    if (confirmed) {
+      startRelatedRequestsSearch();
+    } else {
+      // Si rechaza, volver a interpretar intención
+      startIntentParsing();
+    }
+    
     messages = [...messages, { who:"user", text: response }];
     queueMicrotask(() => {
       const el = document.getElementById("chat-body-inline");
@@ -409,13 +520,29 @@
         signal: abortController.signal
       });
       const data = await res.json();
-      const reply = data.message || "No pude entenderte, ¿puedes reformular?";
-      messages = [...messages, { who:"bot", text: reply, meta: data }];
       
+      // Actualizar el estado de pensamiento según la respuesta del backend
+      if (data.thinking_status) {
+        stopThinkingStatusUpdate();
+        thinkingStatus = data.thinking_status;
+      } else {
+        stopThinkingStatusUpdate();
+        if (data.needs_related_request_selection) {
+          startRelatedRequestsSearch();
+        } else if (data.has_information || data.source_pdfs || data.fuentes) {
+          startDocumentSearch();
+        }
+      }
+      
+      // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
+      const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
+      messages = [...messages, { who:"bot", text: reply, meta: data }];
+
       needsConfirmation = data.needs_confirmation || false;
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
+        selectedRelatedRequestId = "none"; // Resetear selección a "No hay solicitud relacionada" cuando se reciben nuevas solicitudes
       }
       
       // Detectar si se necesita más detalles de handoff (para confirmaciones también)
@@ -481,7 +608,31 @@
         <div class="bubble">
           <div class="message-text">{m.text}</div>
           
-          {#if m.who === "bot" && m.meta?.source_pdfs && m.meta.source_pdfs.length > 0}
+          {#if m.who === "bot" && m.meta?.fuentes && m.meta.fuentes.length > 0}
+            <div class="pdf-sources">
+              <div class="pdf-sources-label">📄 Fuentes consultadas:</div>
+              {#each m.meta.fuentes as fuente}
+                {@const archivo = fuente.archivo || fuente.file_name || ''}
+                {@const paginas = fuente.paginas || (fuente.pagina ? [fuente.pagina] : [])}
+                {@const archivoNombre = archivo.split('/').pop().replace('.pdf', '').replace(/_/g, ' ')}
+                <div class="pdf-source-item">
+                  <a 
+                    href="/api/pdf/{archivo}" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    class="pdf-link"
+                  >
+                    {archivoNombre}
+                  </a>
+                  {#if paginas.length > 0}
+                    <span class="pdf-pages">
+                      {paginas.length === 1 ? `(página ${paginas[0]})` : `(páginas ${paginas.join(', ')})`}
+                    </span>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {:else if m.who === "bot" && m.meta?.source_pdfs && m.meta.source_pdfs.length > 0}
             <div class="pdf-sources">
               <div class="pdf-sources-label">📄 Fuentes consultadas:</div>
               {#each m.meta.source_pdfs as pdfPath}
@@ -505,12 +656,13 @@
       <div class="msg bot">
         <div class="bubble thinking-bubble">
           <div class="processing-text">
-            <span>Pensando</span>
-            <span class="dots">
-              <span class="dot"></span>
-              <span class="dot"></span>
-              <span class="dot"></span>
-            </span>
+            {#key thinkingKey}
+              <span class="thinking-text">{thinkingStatus}<span class="dots">
+                <span class="dot"></span>
+                <span class="dot"></span>
+                <span class="dot"></span>
+              </span></span>
+            {/key}
           </div>
         </div>
       </div>
@@ -545,25 +697,36 @@
           </button>
         </div>
     {:else if needsRelatedRequestSelection}
-      <!-- Mostrar botones de selección de solicitudes relacionadas -->
+      <!-- Mostrar select de selección de solicitudes relacionadas -->
       <div class="input-row">
-        <textarea rows="2" value="" disabled
-          placeholder="Selecciona una solicitud relacionada"></textarea>
+        <select 
+          bind:value={selectedRelatedRequestId}
+          disabled={sending}
+          class="related-request-select">
+          <option value="none">No hay solicitud relacionada</option>
+          {#each relatedRequests as req, index}
+            <option value={req.id}>
+              {index + 1}. {req.display || req.id}
+            </option>
+          {/each}
+        </select>
       </div>
-      <div class="related-requests-buttons">
-        {#each relatedRequests as req, index}
-          <button 
-            class="related-request-btn" 
-            on:click={() => selectRelatedRequest(req.id)} 
-            disabled={sending}>
-            {index + 1}. {req.display || req.id}
-          </button>
-        {/each}
+      <div class="related-request-submit">
         <button 
-          class="related-request-btn no-related" 
-          on:click={() => selectRelatedRequest(null)} 
+          class="send-btn" 
+          on:click={() => {
+            if (selectedRelatedRequestId === "none") {
+              selectRelatedRequest(null);
+            } else if (selectedRelatedRequestId) {
+              // Convertir a número si es posible, sino mantener como string
+              const requestId = isNaN(selectedRelatedRequestId) 
+                ? selectedRelatedRequestId 
+                : parseInt(selectedRelatedRequestId, 10);
+              selectRelatedRequest(requestId);
+            }
+          }}
           disabled={sending}>
-          No hay solicitud relacionada
+          {sending ? "..." : "Continuar"}
         </button>
       </div>
     {:else}
@@ -688,41 +851,42 @@
   border-color:rgba(233,148,63,.45);
 }
 
-/* Botones de solicitudes relacionadas */
-.related-requests-buttons{
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* Select de solicitudes relacionadas */
+.related-request-select{
   width: 100%;
-  margin-top: 8px;
-}
-.related-request-btn{
-  padding: 10px 14px;
+  padding: 12px 14px;
   border: 1px solid var(--gray-200);
   border-radius: 10px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-  text-align: left;
+  font-size: 14px;
+  font-weight: 500;
   background: #fff;
   color: #0f2136;
+  cursor: pointer;
+  transition: all 0.2s;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%230f2136' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 40px;
 }
-.related-request-btn:hover{
-  background: #f3f5f9;
+.related-request-select:hover{
   border-color: var(--orange-500);
+  background-color: #f3f5f9;
 }
-.related-request-btn.no-related{
-  background: #f3f5f9;
-  border-color: #e5e7eb;
-  color: var(--gray-500);
+.related-request-select:focus{
+  outline: none;
+  border-color: var(--orange-500);
+  box-shadow: 0 0 0 3px rgba(255, 139, 42, 0.1);
 }
-.related-request-btn.no-related:hover{
-  background: #e5e7eb;
-  border-color: #d1d5db;
-}
-.related-request-btn:disabled{
-  opacity: 0.6;
+.related-request-select:disabled{
+  opacity: 0.5;
   cursor: not-allowed;
+  background-color: #f3f5f9;
+}
+.related-request-submit{
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* Input inferior */
@@ -766,9 +930,31 @@
 
 /* Pensando… */
 .thinking-bubble{display:flex; align-items:center; gap:8px}
-.processing-text{display:inline-flex; align-items:center; gap:8px; font-weight:700; color:#0f2136}
-.processing-text .dots{display:inline-flex; gap:6px}
-.processing-text .dot{width:6px; height:6px; border-radius:999px; background:#c96f22; animation:bounce 1.2s infinite ease-in-out}
+.processing-text{display:inline-flex; align-items:center; font-weight:700; color:#0f2136}
+.thinking-text{
+  display:inline-flex;
+  align-items:center;
+  animation: textFade 0.5s ease-in-out;
+}
+@keyframes textFade{
+  0%{opacity:0.4}
+  100%{opacity:1}
+}
+.processing-text .dots{
+  display:inline-flex;
+  gap:4px;
+  margin-left:8px;
+  vertical-align:middle;
+  align-items:center;
+}
+.processing-text .dot{
+  width:4px;
+  height:4px;
+  border-radius:999px;
+  background:#c96f22;
+  animation:bounce 1.2s infinite ease-in-out;
+  display:inline-block;
+}
 .processing-text .dot:nth-child(2){animation-delay:.15s}
 .processing-text .dot:nth-child(3){animation-delay:.3s}
 @keyframes bounce{0%,80%,100%{transform:translateY(0); opacity:.5} 40%{transform:translateY(-4px); opacity:1}}
@@ -778,13 +964,19 @@
 .cancel-btn:hover{background:#fca5a5; border-color:#f87171}
 
 /* Fuentes PDF dentro de respuestas */
-.pdf-sources{margin-top:12px; padding-top:10px; border-top:1px solid #dde3ea; display:flex; flex-direction:column; gap:6px}
-.pdf-sources-label{font-size:.78rem; font-weight:700; color:#0f2136}
+.pdf-sources{margin-top:12px; padding-top:10px; border-top:1px solid #dde3ea; display:flex; flex-direction:column; gap:8px}
+.pdf-sources-label{font-size:.78rem; font-weight:700; color:#0f2136; margin-bottom:4px}
+.pdf-source-item{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap
+}
 .pdf-link{
   display:inline-flex; align-items:center; font-size:.82rem; font-weight:700;
   color:var(--orange-600); text-decoration:none; padding:4px 8px; border-radius:8px;
 }
 .pdf-link:hover{background:var(--blue-100); text-decoration:underline}
+.pdf-pages{
+  font-size:.75rem; color:var(--gray-500); font-style:italic
+}
 
 /* Enlaces de archivo renderizados dentro del mensaje del usuario */
 .inline-file-link{color:#0f2136; font-weight:700; text-decoration:underline}

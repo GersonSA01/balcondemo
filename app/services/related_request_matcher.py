@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional
 import json
 from pathlib import Path
 from .config import llm
-from .config import guarded_invoke, ALLOW_RELATED_LLM
+from .config import guarded_invoke
 
 def load_student_requests(student_data: Dict = None) -> List[Dict]:
     """
@@ -33,6 +33,7 @@ def load_student_requests(student_data: Dict = None) -> List[Dict]:
 def format_request_for_llm(solicitud: Dict) -> str:
     """
     Formatea una solicitud para ser enviada al LLM.
+    Solo incluye ID, código, fecha y descripción.
     
     Args:
         solicitud: Diccionario con la solicitud
@@ -43,11 +44,11 @@ def format_request_for_llm(solicitud: Dict) -> str:
     parts = []
 
     parts.append(f"ID: {solicitud.get('id', 'N/A')}")
-    parts.append(f"Código: {solicitud.get('codigo', 'N/A')}")
-    parts.append(f"Estado: {solicitud.get('estado', 'N/A')}")
-    parts.append(f"Tipo: {solicitud.get('tipo', 'N/A')}")
+    codigo = solicitud.get('codigo', 'N/A')
+    parts.append(f"Código: {codigo}")
+    
     if solicitud.get('fecha_creacion'):
-        parts.append(f"Fecha creación: {solicitud.get('fecha_creacion')}")
+        parts.append(f"Fecha: {solicitud.get('fecha_creacion')}")
     if solicitud.get('descripcion'):
         parts.append(f"Descripción: {solicitud.get('descripcion')}")
 
@@ -78,17 +79,20 @@ def find_related_requests(
     # Cargar solicitudes del estudiante
     solicitudes = load_student_requests(student_data)
     
+    print(f"\n{'='*80}")
+    print(f"🔍 [RELATED REQUESTS] Iniciando búsqueda de solicitudes relacionadas")
+    print(f"{'='*80}")
+    print(f"📝 Solicitud del usuario: '{user_request}'")
+    print(f"📊 Total de solicitudes previas encontradas: {len(solicitudes)}")
+    
     if not solicitudes:
+        print(f"⚠️ No hay solicitudes previas del estudiante")
         return {
             "related_requests": [],
             "no_related": True,
             "reasoning": "No hay solicitudes previas del estudiante"
         }
     
-    # Si no se permite LLM para related, usar método local
-    if not ALLOW_RELATED_LLM:
-        return _find_related_local(user_request, solicitudes, max_results)
-
     # Formatear todas las solicitudes para el LLM
     formatted_requests = []
     for sol in solicitudes:
@@ -98,8 +102,16 @@ def find_related_requests(
             "original": sol
         })
     
+    print(f"\n📋 Solicitudes previas del estudiante:")
+    for i, req in enumerate(formatted_requests, 1):
+        print(f"   {i}. ID: {req['id']} | Tipo: {req['original'].get('tipo', 'N/A')} | Estado: {req['original'].get('estado', 'N/A')}")
+        if req['original'].get('descripcion'):
+            desc = req['original'].get('descripcion', '')[:60]
+            print(f"      Descripción: {desc}...")
+    
     # Construir prompt para el LLM
     intent_summary = intent_slots.get("intent_short", user_request)
+    print(f"\n🎯 Resumen de intención: '{intent_summary}'")
     
     prompt = f"""Eres un asistente que ayuda a identificar solicitudes relacionadas en un sistema de gestión estudiantil.
 
@@ -123,49 +135,133 @@ INSTRUCCIONES:
 4. Retorna SOLO las solicitudes que tengan relación significativa (no todas).
 5. Si NO hay solicitudes relacionadas, retorna una lista vacía.
 
+IMPORTANTE: Debes generar un mensaje natural y entendible para el usuario que explique las solicitudes relacionadas encontradas. 
+Cita las solicitudes usando su CÓDIGO (ej: "SOL-BIENESTAR ESTUDIANTIL-20247-210107") para que el usuario pueda identificarlas fácilmente.
+El mensaje debe ser amigable, claro y explicar por qué estas solicitudes están relacionadas con su requerimiento actual.
+
 FORMATO DE RESPUESTA (JSON):
 {{
     "related_request_ids": [210107, 199980],
-    "reasoning": "Breve explicación de por qué estas solicitudes están relacionadas",
+    "user_message": "He encontrado 2 solicitudes relacionadas con tu requerimiento:\n\n1. SOL-BIENESTAR ESTUDIANTIL-20247-210107 - Esta solicitud está relacionada porque...\n2. SOL-JUST-OMI-SUFR-202112-010410 - Esta solicitud está relacionada porque...\n\n¿Deseas relacionar tu solicitud con alguna de estas? Si ninguna es relevante, puedes continuar sin relacionar.",
+    "reasoning": "Breve explicación técnica de por qué estas solicitudes están relacionadas",
     "no_related": false
 }}
 
 Si no hay solicitudes relacionadas:
 {{
     "related_request_ids": [],
+    "user_message": "No he encontrado solicitudes relacionadas con tu requerimiento. ¿Deseas continuar sin relacionar tu solicitud con ninguna solicitud previa?",
     "reasoning": "No se encontraron solicitudes relacionadas",
     "no_related": true
 }}
 """
     
+    print(f"\n{'='*80}")
+    print(f"📤 PROMPT ENVIADO AL LLM:")
+    print(f"{'='*80}")
+    print(prompt)
+    print(f"{'='*80}\n")
+    
     try:
         # Llamar al LLM
+        print(f"⏳ Llamando al LLM...")
         response = guarded_invoke(llm, prompt)
         response_text = response.content if hasattr(response, 'content') else str(response)
+        
+        print(f"\n{'='*80}")
+        print(f"📥 RESPUESTA COMPLETA DEL LLM:")
+        print(f"{'='*80}")
+        print(response_text)
+        print(f"{'='*80}\n")
         
         # Extraer JSON de la respuesta
         # El LLM puede devolver texto con JSON, necesitamos extraerlo
         import re
-        json_match = re.search(r'\{[^{}]*"related_request_ids"[^{}]*\}', response_text, re.DOTALL)
+        print(f"🔧 Extrayendo JSON de la respuesta...")
+        
+        # Limpiar markdown si existe primero
+        json_str = response_text.strip()
+        if json_str.startswith("```"):
+            json_str = re.sub(r'^```(?:json)?\s*', '', json_str, flags=re.MULTILINE)
+            json_str = re.sub(r'\s*```\s*$', '', json_str, flags=re.MULTILINE)
+            print(f"✅ JSON limpiado de markdown")
+        
+        # Intentar encontrar JSON con un patrón que maneje user_message con múltiples líneas
+        # Buscar desde el primer { hasta el último } que contenga related_request_ids
+        json_match = re.search(r'\{.*?"related_request_ids".*?\}', json_str, re.DOTALL)
+        
         if json_match:
             json_str = json_match.group(0)
+            print(f"✅ JSON encontrado mediante regex")
         else:
-            # Intentar parsear toda la respuesta como JSON
-            json_str = response_text.strip()
-            # Limpiar markdown si existe
-            if json_str.startswith("```"):
-                json_str = re.sub(r'^```(?:json)?\s*', '', json_str, flags=re.MULTILINE)
-                json_str = re.sub(r'\s*```\s*$', '', json_str, flags=re.MULTILINE)
+            # Si no se encuentra, intentar parsear toda la respuesta como JSON
+            print(f"⚠️ No se encontró JSON con regex, intentando parsear toda la respuesta")
         
-        result = json.loads(json_str)
+        print(f"\n📄 JSON extraído (antes de parsear):")
+        print(f"{json_str[:500]}..." if len(json_str) > 500 else f"{json_str}\n")
+        
+        # Intentar parsear el JSON
+        result = None
+        try:
+            result = json.loads(json_str)
+            print(f"✅ JSON parseado correctamente")
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Error al parsear JSON: {e}")
+            # Intentar arreglar saltos de línea no escapados en user_message
+            # Reemplazar saltos de línea reales dentro de strings JSON con \n
+            json_str_fixed = re.sub(r'(?<="user_message":\s*")([^"]*)"', 
+                                   lambda m: m.group(1).replace('\n', '\\n').replace('\r', '\\r') + '"', 
+                                   json_str, flags=re.DOTALL)
+            try:
+                result = json.loads(json_str_fixed)
+                print(f"✅ JSON reparado y parseado correctamente")
+            except json.JSONDecodeError:
+                # Si aún falla, intentar extraer solo los campos necesarios manualmente
+                print(f"❌ No se pudo parsear el JSON, intentando extracción manual...")
+                # Extraer related_request_ids
+                ids_match = re.search(r'"related_request_ids":\s*\[([^\]]*)\]', json_str)
+                related_ids = []
+                if ids_match:
+                    ids_str = ids_match.group(1)
+                    related_ids = [int(x.strip()) for x in ids_str.split(',') if x.strip().isdigit()]
+                
+                # Extraer user_message (puede tener múltiples líneas)
+                msg_match = re.search(r'"user_message":\s*"((?:[^"\\]|\\.)*)"', json_str, re.DOTALL)
+                user_message = ""
+                if msg_match:
+                    user_message = msg_match.group(1).replace('\\n', '\n').replace('\\r', '\r')
+                
+                # Extraer reasoning
+                reason_match = re.search(r'"reasoning":\s*"((?:[^"\\]|\\.)*)"', json_str, re.DOTALL)
+                reasoning = reason_match.group(1).replace('\\n', '\n').replace('\\r', '\r') if reason_match else "Sin razonamiento"
+                
+                # Extraer no_related
+                no_related_match = re.search(r'"no_related":\s*(true|false)', json_str, re.IGNORECASE)
+                no_related = no_related_match.group(1).lower() == 'true' if no_related_match else len(related_ids) == 0
+                
+                result = {
+                    "related_request_ids": related_ids,
+                    "user_message": user_message,
+                    "reasoning": reasoning,
+                    "no_related": no_related
+                }
+                print(f"✅ Campos extraídos manualmente")
         
         # Obtener las solicitudes relacionadas
         related_ids = result.get("related_request_ids", [])
+        user_message = result.get("user_message", "")
         reasoning = result.get("reasoning", "Sin razonamiento")
         no_related = result.get("no_related", len(related_ids) == 0)
         
+        print(f"📊 RESULTADO DEL LLM:")
+        print(f"   - IDs de solicitudes relacionadas: {related_ids}")
+        print(f"   - Mensaje para el usuario: {user_message[:100]}..." if len(user_message) > 100 else f"   - Mensaje para el usuario: {user_message}")
+        print(f"   - Razonamiento técnico: {reasoning}")
+        print(f"   - No relacionadas: {no_related}")
+        
         # Filtrar y formatear solicitudes relacionadas
         related_requests = []
+        print(f"\n🔍 Filtrando solicitudes relacionadas...")
         for req_info in formatted_requests:
             if req_info["id"] in related_ids:
                 related_requests.append({
@@ -177,20 +273,33 @@ Si no hay solicitudes relacionadas:
                     "descripcion": req_info["original"].get("descripcion", ""),
                     "display": _generate_request_display(req_info["original"])
                 })
+                print(f"   ✅ ID {req_info['id']} agregado: {req_info['original'].get('tipo', 'N/A')}")
         
         # Limitar a max_results
         related_requests = related_requests[:max_results]
         
+        print(f"\n✅ RESULTADO FINAL:")
+        print(f"   - Solicitudes relacionadas encontradas: {len(related_requests)}")
+        print(f"   - Límite aplicado (max_results={max_results}): {len(related_requests)}")
+        print(f"{'='*80}\n")
+        
         return {
             "related_requests": related_requests,
             "no_related": no_related,
-            "reasoning": reasoning
+            "reasoning": reasoning,
+            "user_message": user_message  # Mensaje generado por el LLM para el usuario
         }
         
     except Exception as e:
-        print(f"⚠️ Error al buscar solicitudes relacionadas: {e}")
+        print(f"\n{'='*80}")
+        print(f"❌ ERROR al buscar solicitudes relacionadas:")
+        print(f"{'='*80}")
+        print(f"   Tipo de error: {type(e).__name__}")
+        print(f"   Mensaje: {str(e)}")
+        print(f"{'='*80}")
         import traceback
         traceback.print_exc()
+        print(f"{'='*80}\n")
         
         # Fallback: retornar que no hay solicitudes relacionadas
         return {
@@ -240,39 +349,4 @@ def _generate_request_display(solicitud: Dict) -> str:
         base += f" - {descripcion[:120]}"
 
     return base
-
-def _find_related_local(user_request: str, solicitudes: List[Dict], max_results: int) -> Dict[str, Any]:
-    """Fallback sin LLM: coincidencia simple por tokens en 'tipo' y 'descripcion'."""
-    if not solicitudes:
-        return {"related_requests": [], "no_related": True, "reasoning": "Sin solicitudes previas"}
-    import re
-    uq = (user_request or "").lower()
-    uq_tokens = set(re.findall(r"[a-záéíóúüñ0-9]+", uq))
-    scored = []
-    for sol in solicitudes:
-        desc = (sol.get("descripcion") or "").lower()
-        tipo = (sol.get("tipo") or "").lower()
-        text = f"{tipo} {desc}"
-        tokens = set(re.findall(r"[a-záéíóúüñ0-9]+", text))
-        inter = uq_tokens & tokens
-        score = len(inter) / (len(uq_tokens) + 1e-6)
-        if score > 0.05:
-            scored.append((score, sol))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    related = []
-    for score, sol in scored[:max_results]:
-        related.append({
-            "id": sol.get("id"),
-            "codigo": sol.get("codigo", ""),
-            "estado": sol.get("estado", ""),
-            "tipo": sol.get("tipo", ""),
-            "fecha_creacion": sol.get("fecha_creacion", ""),
-            "descripcion": sol.get("descripcion", ""),
-            "display": _generate_request_display(sol)
-        })
-    return {
-        "related_requests": related,
-        "no_related": len(related) == 0,
-        "reasoning": "Coincidencia local por tokens"
-    }
 
