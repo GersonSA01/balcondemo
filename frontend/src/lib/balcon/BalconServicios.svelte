@@ -120,7 +120,7 @@
 
 <div class="balcon-container">
     <div class="header-section">
-        <h2 class="page-title">Balcón con GPT-PRIVATE</h2>
+        <h2 class="page-title">Balcón de Servicios</h2>
         <p class="page-subtitle">Para agilizar tu solicitud, selecciona la categoría y subcategoría correspondientes.</p>
     </div>
 
