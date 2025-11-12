@@ -6,23 +6,26 @@ Solución industrial: usar LLM para enriquecer query con contexto.
 import json
 from typing import List, Dict, Any, Optional
 from .config import llm
+from .config import guarded_invoke
+import re
 
 
-def build_conversation_summary(history: List[Dict[str, Any]], max_turns: int = 3) -> str:
+def build_conversation_summary(history: List[Dict[str, Any]], max_turns: int = 4) -> str:
     """
     Construye un resumen de los últimos turnos de conversación.
+    Incluye más contexto para análisis semántico.
     
     Args:
         history: Historial completo de conversación
-        max_turns: Número máximo de turnos a incluir (default: 3)
+        max_turns: Número máximo de turnos a incluir (default: 4, aumentado para mejor contexto)
     
     Returns:
-        Resumen de conversación en formato legible
+        Resumen de conversación en formato legible (con más contexto semántico)
     """
     if not history:
         return "No hay conversación previa."
     
-    # Tomar últimos N turnos (pares usuario-bot)
+    # Tomar últimos N turnos (pares usuario-bot) - más turnos para mejor análisis semántico
     recent = history[-max_turns*2:] if len(history) > max_turns*2 else history
     
     lines = []
@@ -31,13 +34,47 @@ def build_conversation_summary(history: List[Dict[str, Any]], max_turns: int = 3
         text = msg.get("content") or msg.get("text", "")
         
         if role in ("user", "student", "estudiante"):
-            lines.append(f"Usuario: {text}")
+            # Incluir preguntas completas (hasta 250 chars para mantener contexto semántico)
+            lines.append(f"Usuario: {text[:250]}")
         elif role in ("bot", "assistant"):
-            # Limitar longitud de respuestas del bot en el resumen
-            text_short = text[:200] + "..." if len(text) > 200 else text
+            # Incluir más contexto de las respuestas del bot (hasta 350 chars)
+            # El LLM necesita ver temas y detalles para análisis semántico
+            text_short = text[:350] + "..." if len(text) > 350 else text
             lines.append(f"Bot: {text_short}")
     
     return "\n".join(lines)
+
+
+PRONOUN_HINTS = re.compile(r"\b(eso|ese|esa|esto|así|alli|allí|ahí|en ese caso|también|lo mismo|aquello)\b", re.I)
+FOLLOW_UP_HINTS = re.compile(r"\b(y|para|en|de|sobre|cuando|donde|como|que|cuál|cuáles)\s+(la|el|los|las|un|una|ese|esa|eso|este|esta|esto)\b", re.I)
+LOCATION_HINTS = re.compile(r"\b(para|en|de)\s+(quito|machala|santo domingo|azogues|portoviejo|santa elena|sede|ciudad)\b", re.I)
+
+def _heuristic_needs_context(user_text: str, history: List[Dict[str, Any]]):
+    if not history or len(history) < 2:
+        return False, "No hay conversación previa"
+    t = (user_text or "").strip().lower()
+    
+    # Detectar pronombres/referencias
+    if PRONOUN_HINTS.search(t):
+        return True, "Pronombres/referencias detectadas"
+    
+    # Detectar preguntas de seguimiento que empiezan con "y", "para", etc.
+    if FOLLOW_UP_HINTS.search(t):
+        return True, "Pregunta de seguimiento detectada"
+    
+    # Detectar preguntas sobre ubicaciones/lugares específicos (ej: "para quito")
+    if LOCATION_HINTS.search(t):
+        return True, "Pregunta sobre ubicación específica"
+    
+    # Detectar preguntas cortas que pueden ser de seguimiento
+    if len(t) <= 3:  # “sí”, “no”, “ok”
+        return True, "Respuesta corta dependiente"
+    
+    # Detectar preguntas que empiezan con "y" (muy común en seguimientos)
+    if t.startswith("y ") and len(t) > 3:
+        return True, "Pregunta de seguimiento con 'y'"
+    
+    return False, "Pregunta auto-contenida"
 
 
 def needs_context(user_text: str, conversation_history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -64,10 +101,27 @@ def needs_context(user_text: str, conversation_history: List[Dict[str, Any]] = N
             "reason": "No hay conversación previa"
         }
     
+    # Heurística previa: solo filtrar casos OBVIOS donde NO hay contexto
+    # (ej: "sí", "no", "ok" sin contexto previo, o primera pregunta de la conversación)
+    # Para todo lo demás, dejar que el LLM haga análisis semántico
+    flag, reason = _heuristic_needs_context(user_text, conversation_history or [])
+    # Solo usar heurística para casos MUY obvios (respuestas de 1-2 palabras sin contexto claro)
+    # Para el resto, SIEMPRE invocar LLM para análisis semántico
+    if not flag and len(user_text.strip()) <= 2:
+        # Solo filtrar respuestas muy cortas que claramente NO tienen contexto
+        return {
+            "needs_context": False,
+            "confidence": "high",
+            "reason": reason
+        }
+    # Para todo lo demás (preguntas normales), SIEMPRE analizar con LLM
+
     # Construir resumen breve de conversación
     context_summary = build_conversation_summary(conversation_history, max_turns=2)
     
-    prompt = f"""Analiza si esta pregunta necesita contexto de la conversación previa para ser entendida.
+    prompt = f"""Analiza SEMÁNTICAMENTE si esta pregunta necesita contexto de la conversación previa para ser entendida.
+
+IMPORTANTE: Haz análisis SEMÁNTICO, NO solo búsqueda de keywords. Analiza el SIGNIFICADO y la RELACIÓN entre la pregunta y el contexto.
 
 CONVERSACIÓN PREVIA:
 {context_summary}
@@ -75,32 +129,43 @@ CONVERSACIÓN PREVIA:
 PREGUNTA ACTUAL:
 "{user_text}"
 
-Evalúa si la pregunta es:
-- INDEPENDIENTE: Se entiende completamente por sí sola, sin necesitar contexto previo
-- DEPENDIENTE: Tiene referencias, pronombres o conexiones que requieren el contexto previo para entenderse
+ANÁLISIS SEMÁNTICO:
+- INDEPENDIENTE: La pregunta tiene sentido completo por sí sola, sin referencias semánticas al contexto previo.
+- DEPENDIENTE: La pregunta tiene una RELACIÓN SEMÁNTICA con el contexto, aunque no use palabras clave obvias.
 
-Ejemplos de preguntas DEPENDIENTES:
-- "¿Y si falto más?" (se refiere a algo mencionado antes)
-- "¿Eso aplica también para...?" (usa pronombre "eso")
-- "¿Pero en ese caso qué pasa?" (referencia a caso anterior)
-- "¿También puedo...?" (continúa tema anterior)
+Ejemplos de relaciones SEMÁNTICAS que requieren contexto:
+- Contexto: "Exámenes finales: 24-29 noviembre"
+  Pregunta: "y para quito?" → DEPENDIENTE (se refiere semánticamente a fechas de exámenes para Quito)
+- Contexto: "Cambio de paralelo requiere documentos..."
+  Pregunta: "qué documentos necesito?" → DEPENDIENTE (se refiere semánticamente a documentos para cambio de paralelo)
+- Contexto: "Matriculación inicia en marzo"
+  Pregunta: "cuándo es?" → DEPENDIENTE (se refiere semánticamente a fechas de matriculación)
+- Contexto: "Asistencia mínima es 70%"
+  Pregunta: "y si falto más?" → DEPENDIENTE (se refiere semánticamente a consecuencias de faltar más)
 
-Ejemplos de preguntas INDEPENDIENTES:
-- "¿Cuál es la asistencia mínima?" (pregunta completa)
-- "¿Cómo cambio mi contraseña?" (pregunta completa)
-- "Necesito información sobre matrículas" (solicitud completa)
+Ejemplos de preguntas INDEPENDIENTES (sin relación semántica con contexto):
+- "¿Cuál es la asistencia mínima?" (pregunta completa y auto-contenida)
+- "¿Cómo cambio mi contraseña?" (pregunta completa sobre tema diferente)
+- "Necesito información sobre becas" (solicitud completa sobre tema nuevo)
+
+REGLAS:
+1. Analiza el TEMA PRINCIPAL del contexto y si la pregunta se refiere a ese tema
+2. No dependas solo de keywords como "y", "para", "también"
+3. Detecta relaciones semánticas aunque no haya palabras clave obvias
+4. Si la pregunta amplía, especifica o continúa el tema del contexto → DEPENDIENTE
+5. Si la pregunta es sobre un tema completamente diferente → INDEPENDIENTE
 
 Responde ESTRICTAMENTE en formato JSON:
 {{
   "needs_context": true/false,
   "confidence": "high/medium/low",
-  "reason": "explicación breve de 1 línea"
+  "reason": "explicación breve de la relación semántica detectada (o su ausencia)"
 }}
 
 JSON:"""
 
     try:
-        response = llm.invoke(prompt).content.strip()
+        response = guarded_invoke(llm, prompt).content.strip()
         
         # Limpiar markdown si existe
         if response.startswith("```json"):
@@ -147,7 +212,7 @@ def enrich_query_with_context(
     Returns:
         Query enriquecida con contexto (auto-contenida)
     """
-    # Evaluar si necesita contexto usando LLM
+    # Evaluar si necesita contexto usando LLM (solo si heurística lo sugiere)
     context_check = needs_context(user_text, conversation_history)
     
     # Si no necesita contexto, retornar query original
@@ -183,7 +248,7 @@ REGLAS:
 PREGUNTA REFORMULADA:"""
 
     try:
-        enriched_query = llm.invoke(prompt).content.strip()
+        enriched_query = guarded_invoke(llm, prompt).content.strip()
         
         # Limpiar comillas si las agregó el LLM
         enriched_query = enriched_query.strip('"').strip("'").strip()
@@ -201,20 +266,5 @@ PREGUNTA REFORMULADA:"""
 
 
 
-def should_use_conversational_mode(
-    user_text: str,
-    conversation_history: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    """
-    Determina si se debe activar el modo conversacional usando evaluación LLM.
-    
-    Args:
-        user_text: Query del usuario
-        conversation_history: Historial de conversación
-    
-    Returns:
-        Resultado de needs_context() con evaluación completa
-    """
-    # Usar evaluación LLM para determinar si necesita contexto
-    return needs_context(user_text, conversation_history)
+
 

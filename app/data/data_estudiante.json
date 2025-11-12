@@ -1,240 +1,97 @@
 {
   "credenciales": {
     "cedula": "0706191558",
-    "nombre_completo": "Gerson Alexander Suarez Aguirre",
+    "nombre_completo": "SUAREZ AGUIRRE GERSON ALEXANDER",
     "correo_institucional": "gsuareza3@unemi.edu.ec",
     "correo_personal": "gersonsuarezaof@gmail.com",
     "telefono": "0979716263",
     "fecha_nacimiento": "2003-04-11",
-    "direccion": "Av. Las Américas y Costa Rica"
+    "direccion": "AV JAIME ROLDOS"
+  },
+  "persona": {
+    "id": 119601,
+    "cedula": "0706191558",
+    "nombres": "GERSON ALEXANDER",
+    "apellido1": "SUAREZ",
+    "apellido2": "AGUIRRE",
+    "email": "gersonsuarezaof@gmail.com",
+    "telefono": "0979716263"
   },
   "informacion_academica": {
-    "matricula": "2021105678",
+    "matricula": "160259",
     "estado": "ACTIVO",
     "tipo_estudiante": "REGULAR",
-    "periodo_actual": "2024-2025 CICLO I",
-    "facultad": "Ciencias de la Ingeniería",
-    "carrera": "Ingeniería en Software",
-    "nivel_actual": "6to Semestre",
+    "periodo_actual": "ENERO - FEBRERO 2025",
+    "facultad": "FACULTAD CIENCIAS E INGENIERÍA",
+    "carrera": "SOFTWARE 2019",
+    "nivel_actual": "N/A Semestre",
     "modalidad": "PRESENCIAL",
     "jornada": "MATUTINA",
-    "promedio_acumulado": 8.75,
-    "creditos_aprobados": 120,
-    "creditos_totales": 240,
-    "fecha_ingreso": "2021-05-01"
+    "promedio_acumulado": 91.35,
+    "creditos_aprobados": 0,
+    "creditos_totales": 126.0,
+    "fecha_ingreso": "2021-10-15"
   },
   "materias_actuales": [
     {
-      "codigo": "IC-601",
-      "nombre": "Principios deIngeniería de Software",
-      "creditos": 5,
-      "paralelo": "A",
-      "docente": "Ing. Carlos Mendoza MSc.",
-      "aula": "Lab. Computación 3",
-      "horario": [
-        {
-          "dia": "Lunes",
-          "hora_inicio": "08:00",
-          "hora_fin": "10:00"
-        },
-        {
-          "dia": "Miércoles",
-          "hora_inicio": "08:00",
-          "hora_fin": "10:00"
-        },
-        {
-          "dia": "Viernes",
-          "hora_inicio": "08:00",
-          "hora_fin": "10:00"
-        }
-      ],
-      "nota_parcial_1": 8.5,
-      "nota_parcial_2": 9.0,
-      "asistencia": 95,
-      "estado": "CURSANDO"
+      "codigo": "MOD. COMP. II",
+      "nombre": "MODULO DE COMPUTACION II EXCEL - POWERPOINT",
+      "creditos": 0,
+      "paralelo": "N/A",
+      "docente": "N/A",
+      "aula": "N/A",
+      "horario": [],
+      "nota_parcial_1": 0.0,
+      "nota_parcial_2": 0.0,
+      "asistencia": 100.0,
+      "estado": "APROBADO"
     },
     {
-      "codigo": "IC-602",
-      "nombre": "Base de Datos Avanzadas",
-      "creditos": 4,
-      "paralelo": "B",
-      "docente": "Ing. Ana María López PhD.",
-      "aula": "Lab. Computación 2",
+      "codigo": "",
+      "nombre": "DESARROLLO WEB",
+      "creditos": 2,
+      "paralelo": "N/A",
+      "docente": "GUEVARA REYES RODRIGO JOSUE",
+      "aula": "N/A",
       "horario": [
-        {
-          "dia": "Martes",
-          "hora_inicio": "10:00",
-          "hora_fin": "12:00"
-        },
-        {
-          "dia": "Jueves",
-          "hora_inicio": "10:00",
-          "hora_fin": "12:00"
-        }
+        { "dia": "N/A", "hora_inicio": "07:15", "hora_fin": "08:14" },
+        { "dia": "N/A", "hora_inicio": "08:15", "hora_fin": "09:14" },
+        { "dia": "N/A", "hora_inicio": "09:15", "hora_fin": "10:14" },
+        { "dia": "N/A", "hora_inicio": "10:15", "hora_fin": "11:14" },
+        { "dia": "N/A", "hora_inicio": "11:15", "hora_fin": "12:14" },
+        { "dia": "N/A", "hora_inicio": "07:15", "hora_fin": "08:14" },
+        { "dia": "N/A", "hora_inicio": "07:15", "hora_fin": "08:14" },
+        { "dia": "N/A", "hora_inicio": "07:15", "hora_fin": "08:14" },
+        { "dia": "N/A", "hora_inicio": "08:15", "hora_fin": "09:14" },
+        { "dia": "N/A", "hora_inicio": "08:15", "hora_fin": "09:14" },
+        { "dia": "N/A", "hora_inicio": "08:15", "hora_fin": "09:14" },
+        { "dia": "N/A", "hora_inicio": "09:15", "hora_fin": "10:14" },
+        { "dia": "N/A", "hora_inicio": "09:15", "hora_fin": "10:14" },
+        { "dia": "N/A", "hora_inicio": "09:15", "hora_fin": "10:14" },
+        { "dia": "N/A", "hora_inicio": "10:15", "hora_fin": "11:14" },
+        { "dia": "N/A", "hora_inicio": "10:15", "hora_fin": "11:14" },
+        { "dia": "N/A", "hora_inicio": "10:15", "hora_fin": "11:14" },
+        { "dia": "N/A", "hora_inicio": "11:15", "hora_fin": "12:14" },
+        { "dia": "N/A", "hora_inicio": "11:15", "hora_fin": "12:14" },
+        { "dia": "N/A", "hora_inicio": "11:15", "hora_fin": "12:14" }
       ],
-      "nota_parcial_1": 9.5,
-      "nota_parcial_2": 8.8,
-      "asistencia": 98,
-      "estado": "CURSANDO"
-    },
-    {
-      "codigo": "IC-603",
-      "nombre": "Redes de Computadoras",
-      "creditos": 4,
-      "paralelo": "A",
-      "docente": "Ing. Roberto Salazar MSc.",
-      "aula": "Aula 204",
-      "horario": [
-        {
-          "dia": "Lunes",
-          "hora_inicio": "14:00",
-          "hora_fin": "16:00"
-        },
-        {
-          "dia": "Miércoles",
-          "hora_inicio": "14:00",
-          "hora_fin": "16:00"
-        }
-      ],
-      "nota_parcial_1": 7.5,
-      "nota_parcial_2": 8.2,
-      "asistencia": 88,
-      "estado": "CURSANDO"
-    },
-    {
-      "codigo": "IC-604",
-      "nombre": "Inteligencia Artificial",
-      "creditos": 5,
-      "paralelo": "A",
-      "docente": "PhD. Laura Ramírez",
-      "aula": "Lab. Computación 1",
-      "horario": [
-        {
-          "dia": "Martes",
-          "hora_inicio": "08:00",
-          "hora_fin": "10:00"
-        },
-        {
-          "dia": "Jueves",
-          "hora_inicio": "08:00",
-          "hora_fin": "10:00"
-        },
-        {
-          "dia": "Viernes",
-          "hora_inicio": "10:00",
-          "hora_fin": "12:00"
-        }
-      ],
-      "nota_parcial_1": 9.2,
-      "nota_parcial_2": 9.5,
-      "asistencia": 100,
-      "estado": "CURSANDO"
-    },
-    {
-      "codigo": "GE-601",
-      "nombre": "Gestión de Proyectos",
-      "creditos": 3,
-      "paralelo": "C",
-      "docente": "Ing. Patricia Vega MBA",
-      "aula": "Aula 301",
-      "horario": [
-        {
-          "dia": "Viernes",
-          "hora_inicio": "14:00",
-          "hora_fin": "17:00"
-        }
-      ],
-      "nota_parcial_1": 8.8,
-      "nota_parcial_2": 9.0,
-      "asistencia": 92,
-      "estado": "CURSANDO"
+      "nota_parcial_1": 0.0,
+      "nota_parcial_2": 0.0,
+      "asistencia": 100.0,
+      "estado": "APROBADO"
     }
   ],
-  "examenes_proximos": [
-    {
-      "materia": "Ingeniería de Software",
-      "codigo": "IC-601",
-      "tipo": "Examen Final",
-      "fecha": "2025-11-20",
-      "hora": "08:00",
-      "aula": "Auditorio Principal",
-      "duracion_minutos": 120,
-      "temas": [
-        "Patrones de Diseño",
-        "Metodologías Ágiles",
-        "Testing y QA",
-        "DevOps"
-      ]
-    },
-    {
-      "materia": "Base de Datos Avanzadas",
-      "codigo": "IC-602",
-      "tipo": "Examen Final",
-      "fecha": "2025-11-22",
-      "hora": "10:00",
-      "aula": "Lab. Computación 2",
-      "duracion_minutos": 120,
-      "temas": [
-        "Optimización de Consultas",
-        "NoSQL",
-        "Big Data",
-        "Data Warehousing"
-      ]
-    },
-    {
-      "materia": "Redes de Computadoras",
-      "codigo": "IC-603",
-      "tipo": "Examen Final",
-      "fecha": "2025-11-25",
-      "hora": "14:00",
-      "aula": "Aula 204",
-      "duracion_minutos": 90,
-      "temas": [
-        "Protocolos TCP/IP",
-        "Enrutamiento",
-        "Seguridad de Redes",
-        "VPN y VLANs"
-      ]
-    },
-    {
-      "materia": "Inteligencia Artificial",
-      "codigo": "IC-604",
-      "tipo": "Proyecto Final",
-      "fecha": "2025-11-28",
-      "hora": "08:00",
-      "aula": "Lab. Computación 1",
-      "duracion_minutos": 180,
-      "temas": [
-        "Machine Learning",
-        "Redes Neuronales",
-        "Procesamiento de Lenguaje Natural",
-        "Visión por Computador"
-      ]
-    }
-  ],
-  "historial_academico": {
-    "materias_aprobadas": 24,
-    "materias_reprobadas": 1,
-    "materias_retiradas": 0,
-    "promedio_general": 8.75,
-    "semestres_cursados": 5,
-    "reconocimientos": [
-      {
-        "tipo": "Cuadro de Honor",
-        "periodo": "2023-2024 CICLO II",
-        "promedio": 9.2
-      }
-    ]
-  },
+  "examenes_proximos": [],
+  "historial_academico": {},
   "situacion_financiera": {
     "estado": "AL_DIA",
-    "pension_mensual": 250.00,
+    "pension_mensual": 0.0,
     "matricula_pagada": true,
-    "fecha_ultimo_pago": "2024-10-15",
-    "saldo_pendiente": 0.00,
-    "proximo_vencimiento": "2024-11-15",
+    "fecha_ultimo_pago": null,
+    "saldo_pendiente": 0.0,
+    "proximo_vencimiento": null,
     "beca_activa": false,
-    "descuento_aplicado": 0
+    "descuento_aplicado": 0.0
   },
   "servicios_estudiantiles": {
     "seguro_estudiantil": {
@@ -244,13 +101,13 @@
       "vigencia": "2024-05-01 a 2025-04-30"
     },
     "biblioteca": {
-      "carnet": "B-202110567",
-      "libros_prestados": 2,
-      "multas_pendientes": 0.00
+      "carnet": "B-160259",
+      "libros_prestados": 0,
+      "multas_pendientes": 0.0
     },
     "idiomas": {
-      "nivel_ingles": "B2",
-      "modulos_completados": 6,
+      "nivel_ingles": "N/A",
+      "modulos_completados": 0,
       "modulos_totales": 8
     },
     "practicas_preprofesionales": {
@@ -260,22 +117,74 @@
     },
     "vinculacion": {
       "horas_requeridas": 160,
-      "horas_completadas": 80,
-      "proyecto_actual": "Alfabetización Digital Adultos Mayores"
+      "horas_completadas": 0,
+      "proyecto_actual": "N/A"
     }
   },
   "contactos_emergencia": [
     {
-      "nombre": "Pedro González",
-      "parentesco": "Padre",
-      "telefono": "0998765432",
-      "correo": "pedro.gonzalez@gmail.com"
+      "nombre": "WALDO ALBERTO SUAREZ VALAREZO",
+      "parentesco": "Contacto",
+      "telefono": "0993865051",
+      "correo": "N/A"
     },
     {
-      "nombre": "Carmen Torres",
-      "parentesco": "Madre",
-      "telefono": "0987654321",
-      "correo": "carmen.torres@gmail.com"
+      "nombre": "WALDO ALBERTO SUAREZ VALAREZO",
+      "parentesco": "PADRE",
+      "telefono": "0993865051",
+      "correo": "N/A"
+    },
+    {
+      "nombre": "GLORIA MARIA AGUIRRE VILLALTA",
+      "parentesco": "MADRE",
+      "telefono": "0996938079",
+      "correo": "N/A"
+    }
+  ],
+  "solicitudes": [
+    {
+      "id": 210107,
+      "codigo": "SOL-BIENESTAR ESTUDIANTIL-20247-210107",
+      "numero": 4,
+      "estado": "ATENDIDO",
+      "tipo": "SOLICITUD",
+      "descripcion": "BUENAS TARDES, NECESITO ASISTIR A UNA CITA DE CONTROL, VENDRÍA A SER POR EL 9 DE AGOSTO YA QUE AHI SE ME CUMPLIRIAN LOS 15 DIAS",
+      "fecha_creacion": "2024-07-30 14:25:21",
+      "historial_count": 8,
+      "requisitos_count": 0
+    },
+    {
+      "id": 199980,
+      "codigo": "SOL-BIENESTAR ESTUDIANTIL-20247-199980",
+      "numero": 3,
+      "estado": "ATENDIDO",
+      "tipo": "SOLICITUD",
+      "descripcion": "BUENAS DISCULPE DE PREFERENCIA EL SABADO O VIERNES POR LA MAÑANA",
+      "fecha_creacion": "2024-07-05 12:12:12",
+      "historial_count": 7,
+      "requisitos_count": 0
+    },
+    {
+      "id": 10410,
+      "codigo": "SOL-JUST-OMI-SUFR-202112-010410",
+      "numero": 2,
+      "estado": "APROBADO",
+      "tipo": "SOLICITUD",
+      "descripcion": "DOMICILIO FUERA DE LA CIUDAD DE MILAGRO, ADJUNTO PLANILLA DE SERVICIOS BASICOS",
+      "fecha_creacion": "2021-12-18 09:05:08",
+      "historial_count": 2,
+      "requisitos_count": 0
+    },
+    {
+      "id": 5926,
+      "codigo": "SOL-MAT-NIV-20218-005926",
+      "numero": 1,
+      "estado": "ATENDIDO",
+      "tipo": "SOLICITUD",
+      "descripcion": "ASIGNATURA: MATEMÁTICAS, DE LA ACTIVIDAD: TEST UNIDAD 1, POR LA CAUSAL: PROBLEMAS EN PLATAFORMA, CON LA OBSERVACIÓN: INCONVENIENTES: PREGUNTÁS INCOMPLETAS,  PÁGINA LENTA, PÁGINA QUE SE COLAPSA DE VEZ ",
+      "fecha_creacion": "2021-08-31 16:56:26",
+      "historial_count": 2,
+      "requisitos_count": 0
     }
   ]
 }

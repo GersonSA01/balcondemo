@@ -2,10 +2,7 @@
 """Respuesta con RAG desde PDFs."""
 import re
 import json
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
-from .config import llm
+from .config import llm, guarded_invoke
 from .retriever import get_retriever
 
 
@@ -174,19 +171,11 @@ Criterios para "confidence":
 RESPONDE SOLO CON EL JSON, sin explicaciones adicionales:
 """
     
-    prompt = ChatPromptTemplate.from_template(template)
-    
-    # Cadena RAG
-    rag_chain = (
-        {"context": lambda x: format_docs(docs if docs_override else retriever.invoke(x)), "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    
     respuesta_json = {}
     try:
-        respuesta_raw = rag_chain.invoke(intent_text)
+        filled = template.replace("{context}", format_docs(docs)).replace("{question}", intent_text)
+        response = guarded_invoke(llm, filled)
+        respuesta_raw = response.content if hasattr(response, "content") else str(response)
         
         # Parsear JSON de la respuesta
         try:

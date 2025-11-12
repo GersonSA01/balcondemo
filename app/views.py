@@ -56,16 +56,129 @@ def chat_api(request):
     if request.method != "POST":
         return JsonResponse({"error": "POST only"}, status=405)
 
+    uploaded_file = None
+    text = ""
+    conversation_history = []
+    category = None
+    subcategory = None
+    student_data = None
+
     try:
-        payload = json.loads(request.body.decode("utf-8"))
-        text = (payload.get("message") or "").strip()
-        conversation_history = payload.get("history", [])  # Historial de conversación
-        category = payload.get("category")  # Categoría seleccionada
-        subcategory = payload.get("subcategory")  # Subcategoría seleccionada
-        student_data = payload.get("student_data")  # Datos del estudiante
+        # Detectar si viene como multipart/form-data (con archivo) o JSON
+        if request.content_type and "multipart/form-data" in request.content_type:
+            # FormData: extraer campos y archivo
+            text = request.POST.get("message", "").strip()
+            history_str = request.POST.get("history", "[]")
+            try:
+                conversation_history = json.loads(history_str) if history_str else []
+            except json.JSONDecodeError:
+                conversation_history = []
+            
+            category = request.POST.get("category")
+            subcategory = request.POST.get("subcategory")
+            
+            student_data_str = request.POST.get("student_data")
+            if student_data_str:
+                try:
+                    student_data = json.loads(student_data_str)
+                except json.JSONDecodeError:
+                    student_data = None
+            
+            # Procesar archivo si existe
+            if "file" in request.FILES:
+                uploaded_file = request.FILES["file"]
+                
+                # Validar tamaño (máximo 4MB)
+                MAX_FILE_SIZE = 4 * 1024 * 1024  # 4MB en bytes
+                if uploaded_file.size > MAX_FILE_SIZE:
+                    return JsonResponse({
+                        "error": f"El archivo es demasiado grande. El tamaño máximo es 4MB. Tu archivo tiene {(uploaded_file.size / 1024 / 1024):.2f}MB."
+                    }, status=400)
+                
+                # Validar tipo de archivo
+                allowed_types = [
+                    'application/pdf',
+                    'image/jpeg',
+                    'image/jpg',
+                    'image/png'
+                ]
+                allowed_extensions = ['.pdf', '.jpg', '.jpeg', '.png']
+                
+                file_type = uploaded_file.content_type
+                file_name = uploaded_file.name.lower()
+                has_valid_extension = any(file_name.endswith(ext) for ext in allowed_extensions)
+                
+                if file_type not in allowed_types and not has_valid_extension:
+                    return JsonResponse({
+                        "error": "Tipo de archivo no permitido. Solo se aceptan PDF, JPG, JPEG o PNG."
+                    }, status=400)
+                
+                print(f"[Chat API] ✅ Archivo recibido: {uploaded_file.name} ({uploaded_file.size} bytes, tipo: {file_type})")
+        else:
+            # JSON normal (sin archivo)
+            payload = json.loads(request.body.decode("utf-8"))
+            text = payload.get("message")
+            
+            # Convertir a string si es un número o None
+            if text is None:
+                text = ""
+            else:
+                text = str(text).strip()
+            
+            conversation_history = payload.get("history", [])  # Historial de conversación
+            category = payload.get("category")  # Categoría seleccionada
+            subcategory = payload.get("subcategory")  # Subcategoría seleccionada
+            student_data = payload.get("student_data")  # Datos del estudiante del frontend
         
+        # Debug: Log del payload recibido
+        print(f"[Chat API] 📥 Payload recibido:")
+        print(f"   message: {text} (type: {type(text)})")
+        print(f"   category: {category}")
+        print(f"   subcategory: {subcategory}")
+        print(f"   history length: {len(conversation_history)}")
+        print(f"   student_data: {student_data is not None}")
+        
+        # Si no se recibió student_data del frontend, intentar cargarlo desde el archivo JSON (datos de prueba)
+        if not student_data:
+            try:
+                import os
+                from pathlib import Path
+                # Buscar el archivo en la ruta relativa desde views.py
+                # views.py está en app/, y data_estudiante.json está en app/data/
+                json_path = Path(__file__).parent / "data" / "data_estudiante.json"
+                if json_path.exists():
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        student_data = json.load(f)
+                        print(f"[Chat API] ✅ Cargados datos del estudiante desde {json_path}")
+                        print(f"[Chat API] Estudiante: {student_data.get('credenciales', {}).get('nombre_completo', 'N/A')}")
+                else:
+                    print(f"[Chat API] ⚠️ No se encontró el archivo en {json_path}")
+            except Exception as e:
+                print(f"[Chat API] ⚠️ No se pudieron cargar datos del estudiante: {e}")
+                import traceback
+                traceback.print_exc()
+                student_data = None
+        
+        # Validar que haya texto (permitir números e IDs como texto válido)
         if not text:
-            return JsonResponse({"error": "message vacío"}, status=400)
+            # Si no hay texto, podría ser una selección de solicitud relacionada por botón
+            # En ese caso, el mensaje debería venir en el historial o como parte del contexto
+            print(f"[Chat API] ⚠️ Mensaje vacío, verificando historial...")
+            # Buscar en el historial si hay un mensaje reciente del usuario
+            if conversation_history:
+                for msg in reversed(conversation_history):
+                    role = msg.get("role") or msg.get("who")
+                    if role in ("user", "student", "estudiante"):
+                        msg_text = msg.get("content") or msg.get("text", "")
+                        if msg_text:
+                            text = str(msg_text).strip()
+                            print(f"[Chat API] ✅ Usando mensaje del historial: {text[:50]}")
+                            break
+            
+            # Si aún no hay texto, usar un mensaje por defecto
+            if not text:
+                text = "solicitud relacionada seleccionada"
+                print(f"[Chat API] ⚠️ Usando mensaje por defecto: {text}")
         
         # Log de contexto recibido (opcional, para debugging)
         if category and subcategory:
@@ -74,19 +187,26 @@ def chat_api(request):
             nombre = student_data.get("credenciales", {}).get("nombre_completo", "N/A")
             matricula = student_data.get("informacion_academica", {}).get("matricula", "N/A")
             print(f"[Chat API] Estudiante: {nombre} (Matrícula: {matricula})")
+        else:
+            print(f"[Chat API] ⚠️ No hay datos del estudiante disponibles")
             
-    except Exception:
+    except json.JSONDecodeError:
         return JsonResponse({"error": "JSON inválido"}, status=400)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({"error": f"Error al procesar la solicitud: {str(e)}"}, status=400)
 
     # Usar el nuevo servicio RAG
     try:
-        # Pasar contexto adicional al servicio RAG
+        # Pasar contexto adicional al servicio RAG (incluyendo archivo si existe)
         result = classify_with_rag(
             text, 
             conversation_history,
             category=category,
             subcategory=subcategory,
-            student_data=student_data
+            student_data=student_data,
+            uploaded_file=uploaded_file  # Pasar archivo si existe
         )
     except Exception as e:
         import traceback
@@ -150,30 +270,11 @@ def chat_api(request):
             print(f"🔍 [Views] Después de limpiar markdown - Reply contiene nombre?: {nombre_esperado in reply}")
             print(f"🔍 [Views] Primeros 100 chars después: '{reply[:100]}'")
     
-    # Si hay handoff automático, solo loguear (sin crear ticket)
-    if result.get("handoff_auto"):
-        try:
-            import time
-            
-            # Extraer info del estudiante para logging
-            nombre = student_data.get("credenciales", {}).get("nombre_completo", "Usuario") if student_data else "Usuario"
-            matricula = student_data.get("informacion_academica", {}).get("matricula", "N/A") if student_data else "N/A"
-            email = student_data.get("credenciales", {}).get("correo", "no-email@unemi.edu.ec") if student_data else "no-email@unemi.edu.ec"
-            
-            # Log de derivación (sin ticket)
-            print(f"\n{'='*60}")
-            print(f"📤 DERIVACIÓN AUTOMÁTICA A AGENTE")
-            print(f"{'='*60}")
-            print(f"📅 Fecha: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"👤 Estudiante: {nombre} ({matricula})")
-            print(f"📧 Email: {email}")
-            print(f"📂 Categoría: {result.get('category')} › {result.get('subcategory')}")
-            print(f"🏢 Canal: {result.get('handoff_channel')}")
-            print(f"📊 Motivo: {result.get('handoff_reason')}")
-            print(f"{'='*60}\n")
-            
-        except Exception as e:
-            print(f"⚠️ Error al registrar derivación: {e}")
+    # Si hay handoff enviado, el log ya se hizo en rag_chat_service
+    # Solo mantener esta sección por compatibilidad, pero ya no se usa handoff_auto
+    if result.get("handoff_sent"):
+        # El log ya se hizo en rag_chat_service.py
+        pass
 
     return JsonResponse({
         "message": reply,
@@ -188,8 +289,23 @@ def chat_api(request):
         "source_pdfs": result.get("source_pdfs", []),  # PDFs fuente
         "handoff": result.get("handoff", False),
         "handoff_auto": result.get("handoff_auto", False),
+        "handoff_sent": result.get("handoff_sent", False),  # Nuevo flag para handoff enviado
+        "needs_handoff_details": result.get("needs_handoff_details", False),  # Flag para pedir más detalles
+        "needs_handoff_file": result.get("needs_handoff_file", False),  # Flag para requerir archivo
+        "handoff_file_max_size_mb": result.get("handoff_file_max_size_mb", 4),  # Tamaño máximo del archivo
+        "handoff_file_types": result.get("handoff_file_types", []),  # Tipos de archivo permitidos
         "handoff_reason": result.get("handoff_reason"),
         "handoff_channel": result.get("handoff_channel"),
+        "close_chat": result.get("close_chat", False),  # Flag para cerrar el chat
+        # Nuevos campos para solicitudes relacionadas
+        "needs_related_request_selection": result.get("needs_related_request_selection", False),
+        "needs_related_request_confirmation": result.get("needs_related_request_confirmation", False),
+        "needs_more_details": result.get("needs_more_details", False),
+        "related_requests": result.get("related_requests", []),
+        "no_related_request_option": result.get("no_related_request_option", False),
+        "selected_related_request_id": result.get("selected_related_request_id"),
+        "selected_related_request": result.get("selected_related_request"),
+        "reasoning": result.get("reasoning"),
     }, status=200)
 
 

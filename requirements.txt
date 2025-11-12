@@ -1,0 +1,40 @@
+# Django
+Django==4.2.25
+
+# LangChain (versiones compatibles con Python 3.9)
+langchain>=0.0.350,<0.3.0
+langchain-community>=0.0.20
+langchain-google-genai>=0.0.6
+langchain-huggingface>=0.0.1
+langchain-core>=0.1.0
+
+# FAISS (vector database)
+faiss-cpu>=1.7.4  # Usa faiss-gpu si tienes GPU NVIDIA con CUDA
+
+# HuggingFace (embeddings y modelos)
+sentence-transformers>=2.2.0
+transformers>=4.30.0
+huggingface-hub>=0.16.0
+
+# Google Gemini API
+google-generativeai>=0.3.0
+google-api-core>=2.11.0
+
+# Pydantic (modelos de datos)
+pydantic>=1.10.0,<2.0.0  # v1 - más compatible con Python 3.9
+
+# Utilidades
+python-dotenv>=1.0.0
+asgiref>=3.6.0
+
+# Fuzzy matching (opcional, para title_lexicon)
+rapidfuzz>=2.0.0
+
+# PDF Processing
+pypdf>=3.0.0
+
+# Otros
+typing-extensions>=4.0.0  # Para type hints avanzados en Python 3.9
+
+
+

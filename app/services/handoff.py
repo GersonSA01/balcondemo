@@ -1,6 +1,7 @@
 
 from typing import Dict, List, Any, Optional
 from .config import TAU_NORMA, TAU_MIN, llm
+from .config import ALLOW_HANDOFF_LLM, llm_budget_remaining
 import json
 
 # Intenciones críticas que requieren intervención humana
@@ -561,19 +562,12 @@ def should_handoff(
     """
     reasons = []
     
-    # Clasificar con LLM si no hay answer_type
-    # FUSIONADO: Ahora también devuelve categoria/subcategoria en la misma llamada
+    # Inicializar clasificación y usar fallback barato por defecto.
     llm_classification = None
-    if user_text and not answer_type:
-        llm_classification = classify_with_llm(user_text, intent_short, category, subcategory, slots, include_taxonomy=True)
-        answer_type = llm_classification["answer_type"]
-        channel_llm = llm_classification["channel"]
-        department = llm_classification["department"]
-    else:
-        # Fallback si no hay texto de usuario
-        answer_type = answer_type or _classify_answer_type_fallback(intent_short, slots)
-        channel_llm = None
-        department = "general"
+    channel_llm = None
+    department = "general"
+    # Fallback inicial para poder evaluar reglas sin invocar LLM
+    answer_type = answer_type or _classify_answer_type_fallback(intent_short, slots)
     
     # Contar repreguntas
     followups = count_followups(history)
@@ -609,6 +603,26 @@ def should_handoff(
             if "operativo_requiere_validacion" not in reasons:
                 reasons.append("operativo_requiere_validacion")
     
+    # Antes de decidir, ver si es necesario invocar LLM según señales duras
+    if user_text:
+        should_call_llm = False
+        if confidence < TAU_MIN:
+            should_call_llm = True
+        if TAU_MIN <= confidence < TAU_NORMA and intent_short in CRITICAL_INTENTS:
+            should_call_llm = True
+        if missing_docs:
+            should_call_llm = True
+        if followups >= 2 and confidence < TAU_NORMA:
+            should_call_llm = True
+        # Aplicar gating global: bandera y presupuesto de tokens
+        if should_call_llm and ALLOW_HANDOFF_LLM and llm_budget_remaining() >= 1:
+            llm_classification = classify_with_llm(
+                user_text, intent_short, category, subcategory, slots, include_taxonomy=True
+            )
+            answer_type = llm_classification.get("answer_type", answer_type)
+            channel_llm = llm_classification.get("channel")
+            department = llm_classification.get("department", department)
+
     # Decisión final
     handoff = len(reasons) > 0
     

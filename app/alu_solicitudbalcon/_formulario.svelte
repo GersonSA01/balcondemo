@@ -170,20 +170,6 @@
     </div>
     <form id="frmRequestService" on:submit|preventDefault={saveRequestServicess}>
         <div class="my-2">
-            {#if eListaSolicitudes }
-            <div class="col-sm-12">
-                <label for="eRequestServiceSoicitudRelacionada" class="form-label fw-bold mx-3 mt-2">
-                    ¿Tiene una solicitud relacionada?:
-                </label>
-                <select class="form-control form-select" name="solicitud" id="id_solicitud" style="width: 100%">
-                    <option value="0">---</option>
-                    {#each eListaSolicitudes as solicitud}
-                        <option value={solicitud.id}>{solicitud.solicitud_display}</option>
-                    {/each}
-                </select>
-
-            </div>
-            {/if}
             <div class="col-md-12">
                 <label for="eRequestServiceObservation" class="form-label fw-bold mx-3 mt-2">                
                     Descripción*:

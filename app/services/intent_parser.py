@@ -3,7 +3,7 @@
 import json
 import re
 from langchain_core.prompts import ChatPromptTemplate
-from .config import llm
+from .config import llm, guarded_invoke
 
 
 INTENT_SYSTEM_V2 = """
@@ -36,7 +36,7 @@ Reglas:
 def interpretar_intencion_principal(texto_usuario: str) -> dict:
     """Devuelve un dict con slots de intención."""
     prompt = f"{INTENT_SYSTEM_V2}\n\nTEXTO:\n{texto_usuario}\n"
-    out = llm.invoke(prompt)
+    out = guarded_invoke(llm, prompt)
     raw = getattr(out, "content", str(out)).strip()
     m = re.search(r"\{[\s\S]*\}", raw)
     blob = m.group(0) if m else raw
@@ -107,7 +107,7 @@ def _confirm_text_from_slots(sl: dict) -> str:
             ("human", user),
         ]).format_messages()
 
-        out = llm.invoke(msgs)
+        out = guarded_invoke(llm, msgs)
         text = getattr(out, "content", str(out)).strip()
 
         text = re.sub(r"\s+", " ", text)
