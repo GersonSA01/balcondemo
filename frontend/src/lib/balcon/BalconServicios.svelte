@@ -115,7 +115,7 @@
 </script>
 
 <svelte:head>
-    <title>Balcón de servicios</title>
+    <title>Balcón con GPT-PRIVATE</title>
 </svelte:head>
 
 <div class="balcon-container">
