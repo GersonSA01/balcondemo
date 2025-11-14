@@ -4,8 +4,11 @@ Servicio de chat usando PrivateGPT API.
 Flujo: Saludo → Interpretar Intención → Confirmar → Solicitudes Relacionadas → PrivateGPT API (con mensaje confirmado)
 """
 from typing import Dict, List, Any, Optional
+from enum import Enum
 import json
 import re
+import unicodedata
+from datetime import datetime
 from .privategpt_client import get_privategpt_client, PrivateGPTClient
 from .handoff import get_departamento_real, classify_with_llm, _classify_answer_type_fallback
 from .intent_parser import (
@@ -17,7 +20,31 @@ from .intent_parser import (
     obtener_primer_nombre
 )
 from .related_request_matcher import find_related_requests, load_student_requests
+from .privategpt_response_parser import PrivateGPTResponseParser
+from .solicitud_service import crear_solicitud, obtener_solicitudes_usuario
 from pathlib import Path
+
+
+class ConversationStage(Enum):
+    """Estados posibles de la conversación."""
+    GREETING = "greeting"
+    AWAIT_INTENT = "await_intent"
+    AWAIT_CONFIRM = "await_confirm"
+    AWAIT_RELATED_REQUEST = "await_related_request"
+    AWAIT_HANDOFF_DETAILS = "await_handoff_details"
+
+# Intenciones que se pueden responder SOLO con student_data (sin LLM ni PrivateGPT)
+DATA_INTENTS = {
+    "consultar_solicitudes_balcon",
+    "consultar_carrera_actual",
+    "consultar_roles_usuario",
+    "consultar_datos_personales",
+}
+
+# Campos seguros que se pueden mostrar del JSON (whitelist)
+SAFE_PERSON_FIELDS = {
+    "nombres", "apellido1", "apellido2", "emailinst", "email"
+}
 
 
 def _agrupar_fuentes_por_archivo(fuentes: List[Dict]) -> List[Dict]:
@@ -100,15 +127,69 @@ def _formatear_fuentes_para_respuesta(fuentes_agrupadas: List[Dict]) -> str:
     return ""
 
 
+def _normalize_text_for_llm(text: str) -> str:
+    """
+    Normaliza el texto quitando tildes y caracteres especiales para enviarlo al LLM.
+    
+    Args:
+        text: Texto a normalizar
+    
+    Returns:
+        Texto normalizado sin tildes ni caracteres especiales
+    """
+    if not text:
+        return ""
+    
+    # Normalizar a NFD (descomponer caracteres con tildes)
+    text_normalized = unicodedata.normalize('NFD', text)
+    
+    # Filtrar solo caracteres ASCII básicos (quitar diacríticos)
+    text_ascii = ''.join(
+        char for char in text_normalized 
+        if unicodedata.category(char) != 'Mn'  # Mn = Mark, Nonspacing (tildes, diacríticos)
+    )
+    
+    # Reemplazar caracteres especiales comunes por equivalentes ASCII
+    replacements = {
+        'ñ': 'n',
+        'Ñ': 'N',
+        '¿': '?',
+        '¡': '!',
+        '«': '"',
+        '»': '"',
+        '…': '...',
+        '–': '-',
+        '—': '-',
+    }
+    
+    for old_char, new_char in replacements.items():
+        text_ascii = text_ascii.replace(old_char, new_char)
+    
+    # Limpiar espacios múltiples y espacios al inicio/final
+    text_ascii = re.sub(r'\s+', ' ', text_ascii).strip()
+    
+    return text_ascii
+
+
 def _call_privategpt_api(
     user_text: str,  # SOLO el mensaje confirmado del usuario (no "sí" o "correcto")
     conversation_history: List[Dict],
     category: str = None,
     subcategory: str = None,
-    student_data: Dict = None
+    student_data: Dict = None,
+    perfil_id: str = None
 ) -> Dict[str, Any]:
     """
     Llama a la API de PrivateGPT con el mensaje confirmado del usuario.
+    Incluye contexto de rol para filtrar información relevante.
+    
+    Args:
+        user_text: Mensaje del usuario
+        conversation_history: Historial de conversación
+        category: Categoría seleccionada
+        subcategory: Subcategoría seleccionada
+        student_data: Datos completos del usuario desde data_unemi.json
+        perfil_id: ID del perfil seleccionado (opcional)
     
     Returns:
         {
@@ -120,38 +201,51 @@ def _call_privategpt_api(
     """
     client = get_privategpt_client()
     
-    if not client.is_available():
-        return {
-            "has_information": False,
-            "response": "Lo siento, el servicio de inteligencia artificial no está disponible en este momento. Por favor, intenta más tarde o contacta al administrador.",
-            "fuentes": [],
-            "error": "PrivateGPT no disponible"
-        }
+    try:
+        is_available = client.is_available()
+    except Exception as e:
+        print(f"⚠️ [PrivateGPT] Health check falló: {e}")
+        is_available = False
     
-    # Construir mensajes para PrivateGPT
-    # PrivateGPT es un sistema RAG que busca en documentos basándose SOLO en la consulta actual
-    # NO necesita contexto del sistema (información del estudiante, categoría, etc.)
-    # NO necesita historial de conversación
-    # Solo necesita el mensaje original del usuario
+    if not is_available:
+        print(f"⚠️ [PrivateGPT] Health check falló, pero intentando petición de chat...")
     
-    messages = [
-        {
-            "role": "user",
-            "content": user_text
-        }
-    ]
+    # Extraer rol del usuario desde student_data usando perfil_id si está disponible
+    rol = _extract_user_role(student_data, perfil_id)
+    print(f"👤 [Rol] Rol detectado: {rol} (perfil_id: {perfil_id})")
     
-    print(f"📤 [PrivateGPT] Enviando mensaje a la API:")
-    print(f"   Mensaje: '{user_text[:100]}'")
-    print(f"   Total de mensajes: {len(messages)}")
+    # Normalizar texto del usuario antes de enviarlo al LLM
+    user_text_normalized = _normalize_text_for_llm(user_text)
+    print(f"📝 [Normalización] Texto original: '{user_text[:100]}'")
+    print(f"📝 [Normalización] Texto normalizado: '{user_text_normalized[:100]}'")
+    
+    # Construir mensajes con contexto de rol usando texto normalizado
+    messages = _build_role_context_message(user_text_normalized, rol)
+    
+    # Construir session_context con información del rol (si PrivateGPT lo soporta)
+    session_context = None
+    if student_data:
+        perfil_principal = _get_current_student_profile(student_data)
+        if not perfil_principal:
+            perfiles_activos = [p for p in student_data.get("perfiles", []) if p.get("status", False)]
+            if perfiles_activos:
+                perfil_principal = perfiles_activos[0]
+        
+        if perfil_principal:
+            session_context = {
+                "user_role": rol,
+                "profile_type": perfil_principal.get("tipo", ""),
+                "carrera": perfil_principal.get("carrera_nombre", ""),
+                "facultad": perfil_principal.get("facultad_nombre", "")
+            }
     
     try:
-        
         response = client.chat_completion(
             messages=messages,
             use_context=True,
             include_sources=True,
-            stream=False
+            stream=False,
+            session_context=session_context
         )
         
         if response.get("error"):
@@ -164,196 +258,16 @@ def _call_privategpt_api(
                 "error": error_msg
             }
         
-        # Procesar respuesta de PrivateGPT
-        print(f"📥 [PrivateGPT] Respuesta recibida:")
-        print(f"   Keys en respuesta: {list(response.keys())}")
+        # Usar parser para normalizar respuesta
+        parsed = PrivateGPTResponseParser.parse(response)
+        has_information = parsed.get("has_information", False)
+        response_text = parsed.get("response", "")
+        fuentes = parsed.get("fuentes", [])
         
-        # Debug: Mostrar estructura completa de la respuesta (primeros 2000 caracteres)
-        import json
-        response_str = json.dumps(response, indent=2, default=str)
-        print(f"   Estructura completa (primeros 2000 chars):\n{response_str[:2000]}")
-        
-        # PrivateGPT puede devolver el formato nuevo (has_information, response, fuentes)
-        # o el formato estándar de chat completions (choices, message, content)
-        has_information = response.get("has_information", False)
-        response_text = response.get("response", "")
-        fuentes = response.get("fuentes", [])
-        
-        # Si no está en el formato nuevo, procesar formato estándar de chat completions
-        if not response_text and "choices" in response:
-            choices = response.get("choices", [])
-            print(f"   🔍 Procesando formato estándar de chat completions")
-            print(f"   Número de choices: {len(choices)}")
-            
-            if choices:
-                choice = choices[0]
-                print(f"   Keys en choice[0]: {list(choice.keys())}")
-                
-                message = choice.get("message", {})
-                print(f"   Keys en message: {list(message.keys()) if isinstance(message, dict) else 'N/A'}")
-                
-                content_raw = message.get("content", "") if isinstance(message, dict) else ""
-                
-                # PrivateGPT puede devolver el content como JSON string o como texto plano
-                # Intentar parsear como JSON primero
-                try:
-                    if isinstance(content_raw, str) and content_raw.strip().startswith("{"):
-                        content_parsed = json.loads(content_raw)
-                        # Si es un objeto JSON con "response", usar ese campo
-                        if isinstance(content_parsed, dict) and "response" in content_parsed:
-                            response_text = content_parsed.get("response", "")
-                            # Si también tiene fuentes en el JSON, agregarlas
-                            if "fuentes" in content_parsed and not fuentes:
-                                fuentes_json = content_parsed.get("fuentes", [])
-                                for fuente in fuentes_json:
-                                    if isinstance(fuente, dict):
-                                        fuentes.append({
-                                            "archivo": fuente.get("archivo", ""),
-                                            "pagina": str(fuente.get("pagina", ""))
-                                        })
-                            # Si tiene has_information, usarlo
-                            if "has_information" in content_parsed:
-                                has_information = content_parsed.get("has_information", False)
-                            print(f"   ✅ Content parseado como JSON, response extraído: {len(response_text)} caracteres")
-                        else:
-                            # No es el formato esperado, usar el texto completo
-                            response_text = content_raw
-                    else:
-                        # No es JSON, usar como texto plano
-                        response_text = content_raw
-                except (json.JSONDecodeError, ValueError) as e:
-                    # Si falla el parseo, usar el texto completo
-                    print(f"   ⚠️ No se pudo parsear content como JSON: {e}")
-                    response_text = content_raw
-                
-                # Buscar fuentes en diferentes ubicaciones posibles
-                # 1. En el nivel de response
-                if "sources" in response:
-                    print(f"   ✅ Encontradas fuentes en response.sources")
-                    fuentes_raw = response.get("sources", [])
-                    print(f"   Número de fuentes en response.sources: {len(fuentes_raw)}")
-                    for source in fuentes_raw:
-                        if isinstance(source, dict):
-                            print(f"   Fuente raw: {json.dumps(source, indent=2, default=str)[:500]}")
-                            fuentes.append({
-                                "archivo": source.get("document", {}).get("doc_metadata", {}).get("file_name", source.get("file_name", "")),
-                                "pagina": str(source.get("document", {}).get("doc_metadata", {}).get("page_label", source.get("page", "")))
-                            })
-                
-                # 2. En choice[0]
-                if "sources" in choice:
-                    print(f"   ✅ Encontradas fuentes en choice[0].sources")
-                    fuentes_raw = choice.get("sources", [])
-                    print(f"   Número de fuentes en choice[0].sources: {len(fuentes_raw)}")
-                    for source in fuentes_raw:
-                        if isinstance(source, dict):
-                            print(f"   Fuente raw: {json.dumps(source, indent=2, default=str)[:500]}")
-                            # Intentar extraer archivo y página de diferentes formatos
-                            archivo = ""
-                            pagina = ""
-                            
-                            # Formato 1: source.document.doc_metadata.file_name
-                            if "document" in source:
-                                doc = source.get("document", {})
-                                if "doc_metadata" in doc:
-                                    metadata = doc.get("doc_metadata", {})
-                                    archivo = metadata.get("file_name", metadata.get("file_name", ""))
-                                    pagina = str(metadata.get("page_label", metadata.get("page", "")))
-                            
-                            # Formato 2: source.file_name directamente
-                            if not archivo:
-                                archivo = source.get("file_name", source.get("document_name", ""))
-                            if not pagina:
-                                pagina = str(source.get("page", source.get("page_number", "")))
-                            
-                            if archivo:
-                                fuentes.append({
-                                    "archivo": archivo,
-                                    "pagina": pagina
-                                })
-                
-                # 3. En message (si existe)
-                if isinstance(message, dict) and "sources" in message:
-                    print(f"   ✅ Encontradas fuentes en message.sources")
-                    fuentes_raw = message.get("sources", [])
-                    print(f"   Número de fuentes en message.sources: {len(fuentes_raw)}")
-                    for source in fuentes_raw:
-                        if isinstance(source, dict):
-                            print(f"   Fuente raw: {json.dumps(source, indent=2, default=str)[:500]}")
-                            fuentes.append({
-                                "archivo": source.get("document", {}).get("doc_metadata", {}).get("file_name", source.get("file_name", "")),
-                                "pagina": str(source.get("document", {}).get("doc_metadata", {}).get("page_label", source.get("page", "")))
-                            })
-                
-                # 4. Buscar en context (si existe)
-                if "context" in choice:
-                    context = choice.get("context", {})
-                    print(f"   Keys en context: {list(context.keys()) if isinstance(context, dict) else 'N/A'}")
-                    if isinstance(context, dict) and "citations" in context:
-                        citations = context.get("citations", [])
-                        print(f"   Número de citations: {len(citations)}")
-                        for citation in citations:
-                            if isinstance(citation, dict):
-                                print(f"   Citation raw: {json.dumps(citation, indent=2, default=str)[:500]}")
-                                fuentes.append({
-                                    "archivo": citation.get("document", {}).get("doc_metadata", {}).get("file_name", citation.get("file_name", "")),
-                                    "pagina": str(citation.get("document", {}).get("doc_metadata", {}).get("page_label", citation.get("page", "")))
-                                })
-                
-                # Si hay fuentes, asumir que hay información
-                if fuentes:
-                    has_information = True
-                    print(f"   ✅ Se encontraron {len(fuentes)} fuentes")
-                else:
-                    print(f"   ⚠️ No se encontraron fuentes en ninguna ubicación")
-                    # Determinar si hay información relevante basándose en la respuesta
-                    # Si la respuesta menciona que no hay información o que el contexto no contiene información, entonces no hay información
-                    response_lower = response_text.lower()
-                    no_info_keywords = [
-                        "no contiene información",
-                        "no tengo información",
-                        "no se encontró información",
-                        "no hay información",
-                        "contexto no contiene",
-                        "no contiene información específica"
-                    ]
-                    has_information = not any(keyword in response_lower for keyword in no_info_keywords)
-                    print(f"   has_information determinado por keywords: {has_information}")
-        
-        # Si aún no hay respuesta, usar mensaje por defecto
         if not response_text:
             response_text = "No pude procesar tu solicitud."
         
-        # Agrupar fuentes por archivo y consolidar páginas
-        print(f"   🔍 [Agrupación] Antes de agrupar:")
-        print(f"   Fuentes recibidas: {len(fuentes)}")
-        if fuentes:
-            print(f"   Ejemplo de fuente (primeras 2): {json.dumps(fuentes[:2], indent=2, default=str)}")
-        
         fuentes_agrupadas = _agrupar_fuentes_por_archivo(fuentes)
-        
-        print(f"   📊 Resultado final:")
-        print(f"   has_information: {has_information}")
-        print(f"   response length: {len(response_text)} caracteres")
-        print(f"   Fuentes originales: {len(fuentes)}")
-        print(f"   Fuentes agrupadas: {len(fuentes_agrupadas)}")
-        
-        if fuentes_agrupadas:
-            print(f"   ✅ Fuentes agrupadas correctamente:")
-            for i, fuente in enumerate(fuentes_agrupadas, 1):
-                archivo = fuente.get("archivo", "N/A")
-                paginas = fuente.get("paginas", [])
-                if paginas:
-                    paginas_str = ", ".join(paginas)
-                    print(f"      {i}. {archivo} (páginas: {paginas_str})")
-                else:
-                    print(f"      {i}. {archivo} (sin páginas)")
-            print(f"   📋 Formato de fuentes agrupadas: {json.dumps(fuentes_agrupadas[:1], indent=2, default=str) if fuentes_agrupadas else '[]'}")
-        else:
-            print(f"   ⚠️ No se encontraron fuentes en la respuesta")
-            # Si no hay fuentes, mostrar parte de la respuesta para debugging
-            if not has_information:
-                print(f"   Respuesta (primeros 200 chars): {response_text[:200]}")
         
         # Formatear fuentes para incluir en la respuesta (opcional, para mostrar en el texto)
         # Pero mantener las fuentes originales y agrupadas en el dict para el frontend
@@ -366,7 +280,6 @@ def _call_privategpt_api(
             if "Fuentes:" not in response_text and "fuentes:" not in response_text.lower():
                 response_final = response_text + fuentes_texto
         
-        print(f"   ✅ [Agrupación] Devolviendo {len(fuentes_agrupadas)} fuentes agrupadas")
         
         return {
             "has_information": has_information,
@@ -377,8 +290,8 @@ def _call_privategpt_api(
         
     except Exception as e:
         import traceback
+        print(f"❌ [PrivateGPT] Excepción: {type(e).__name__}: {str(e)}")
         traceback.print_exc()
-        print(f"❌ [PrivateGPT] Excepción: {str(e)}")
         return {
             "has_information": False,
             "response": f"Lo siento, ocurrió un error al procesar tu solicitud: {str(e)}. Por favor, intenta nuevamente o contacta al administrador.",
@@ -445,9 +358,6 @@ def _aplicar_excepciones_informativas(
         if (excepcion in intent_lower or 
             excepcion in user_text_lower or 
             excepcion in accion_objeto):
-            print(f"🔍 [Excepciones] '{excepcion}' detectado - convirtiendo de operativo a informativo")
-            print(f"   Intent: '{intent_short}'")
-            print(f"   Acción: '{accion}', Objeto: '{objeto}'")
             return "informativo"
     
     # Verificar patrones específicos en el texto del usuario usando regex
@@ -463,115 +373,671 @@ def _aplicar_excepciones_informativas(
     
     for patron in patrones_prohibidos:
         if re.search(patron, user_text_lower):
-            print(f"🔍 [Excepciones] Patrón '{patron}' detectado en texto - convirtiendo a informativo")
             return "informativo"
     
     return answer_type
 
 
-def _determinar_departamento_handoff(
-    user_text: str,
-    category: str = None,
-    subcategory: str = None,
-    intent_slots: Dict = None,
-    student_data: Dict = None
-) -> str:
+def _extract_user_role(student_data: Optional[Dict], perfil_id: Optional[str] = None) -> str:
     """
-    Determina el departamento al que se debe derivar la solicitud.
-    
-    Returns:
-        Nombre del departamento
-    """
-    # Intentar obtener departamento desde categoría/subcategoría
-    if category and subcategory:
-        depto = get_departamento_real(category, subcategory)
-        if depto:
-            print(f"🏢 [Handoff] Departamento desde categoría: {depto}")
-            return depto
-    
-    # Si hay intent_slots, intentar usar LLM para clasificar
-    if intent_slots:
-        intent_short = intent_slots.get("intent_short", "")
-        if intent_short:
-            try:
-                llm_classification = classify_with_llm(
-                    user_text, intent_short, category, subcategory, intent_slots, include_taxonomy=False
-                )
-                depto_llm = llm_classification.get("department")
-                if depto_llm:
-                    print(f"🏢 [Handoff] Departamento desde LLM: {depto_llm}")
-                    return depto_llm
-            except Exception as e:
-                print(f"⚠️ [Handoff] Error al usar LLM para determinar departamento: {e}")
-    
-    # Departamento por defecto
-    default_depto = "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
-    print(f"🏢 [Handoff] Usando departamento por defecto: {default_depto}")
-    return default_depto
-
-
-def classify_with_privategpt(
-    user_text: str,
-    conversation_history: List[Dict] = None,
-    category: str = None,
-    subcategory: str = None,
-    student_data: Dict = None,
-    uploaded_file: Any = None
-) -> Dict[str, Any]:
-    """
-    Clasificador principal con flujo restaurado.
-    
-    Flujo:
-    1. Saludo → respuesta de bienvenida
-    2. Interpretar intención → pedir confirmación
-    3. Usuario confirma → buscar solicitudes relacionadas
-    4. Si hay solicitudes relacionadas → mostrar para selección
-    5. Si no hay o después de seleccionar → ENVIAR MENSAJE CONFIRMADO a PrivateGPT API
-    6. Si has_information=True → devolver respuesta con fuentes
-    7. Si has_information=False → determinar departamento y hacer handoff
+    Extrae el rol del usuario desde el perfil seleccionado en student_data.
+    Ahora funciona con datos completos desde data_unemi.json.
     
     Args:
-        user_text: Mensaje del usuario
-        conversation_history: Historial de conversación
-        category: Categoría seleccionada (opcional)
-        subcategory: Subcategoría seleccionada (opcional)
-        student_data: Datos del estudiante (opcional)
-        uploaded_file: Archivo subido (opcional)
+        student_data: Datos completos del usuario desde data_unemi.json
+        perfil_id: ID del perfil seleccionado (opcional, si no se proporciona usa el principal)
     
     Returns:
-        Dict con la respuesta del chat y metadatos
+        String con el rol: "estudiante", "profesor", "administrativo", "externo", etc.
+        Por defecto retorna "usuario" si no se puede determinar.
     """
-    conversation_history = conversation_history or []
+    if not student_data:
+        return "usuario"
     
-    # 1. Procesar archivo subido si existe
-    if uploaded_file:
+    # Buscar perfiles en student_data (estructura desde data_unemi.json)
+    perfiles = student_data.get("perfiles", [])
+    if not perfiles:
+        return "usuario"
+    
+    # Filtrar perfiles activos
+    perfiles_activos = [p for p in perfiles if p.get("status", False)]
+    if not perfiles_activos:
+        return "usuario"
+    
+    # Si se proporciona perfil_id, buscar ese perfil específico
+    perfil_seleccionado = None
+    if perfil_id:
+        for p in perfiles_activos:
+            if str(p.get("id")) == str(perfil_id):
+                perfil_seleccionado = p
+                break
+    
+    # Si no se encontró el perfil específico o no se proporcionó perfil_id,
+    # buscar perfil principal
+    if not perfil_seleccionado:
+        for p in perfiles_activos:
+            if p.get("inscripcionprincipal", False):
+                perfil_seleccionado = p
+                break
+    
+    # Si aún no hay perfil, usar el primero activo
+    if not perfil_seleccionado:
+        perfil_seleccionado = perfiles_activos[0]
+    
+    # Determinar rol según flags del perfil
+    if perfil_seleccionado.get("es_estudiante", False):
+        return "estudiante"
+    elif perfil_seleccionado.get("es_profesor", False):
+        return "profesor"
+    elif perfil_seleccionado.get("es_administrativo", False):
+        return "administrativo"
+    elif perfil_seleccionado.get("es_externo", False):
+        return "externo"
+    elif perfil_seleccionado.get("es_postulante", False):
+        return "postulante"
+    elif perfil_seleccionado.get("es_postulanteempleo", False):
+        return "postulante_empleo"
+    
+    # Fallback: usar el tipo del perfil
+    tipo = perfil_seleccionado.get("tipo", "").upper()
+    if "ESTUDIANTE" in tipo or "INGENIER" in tipo or "SOFTWARE" in tipo or "ADMISI" in tipo:
+        return "estudiante"
+    elif "PROFESOR" in tipo:
+        return "profesor"
+    elif "ADMINISTRATIVO" in tipo:
+        return "administrativo"
+    elif "EXTERNO" in tipo:
+        return "externo"
+    
+    return "usuario"
+
+
+def _build_role_context_message(user_text: str, rol: str) -> List[Dict[str, str]]:
+    """
+    Construye los mensajes con contexto de rol para PrivateGPT.
+    El prompt del sistema ahora incluye el rol específico para que PrivateGPT lo use
+    junto con su default_query_system_prompt que ya tiene instrucciones de filtrado.
+    
+    Args:
+        user_text: Mensaje original del usuario
+        rol: Rol del usuario (estudiante, profesor, etc.)
+    
+    Returns:
+        Lista de mensajes con contexto de rol
+    """
+    # Instrucciones específicas de filtrado según el rol
+    # Estas se combinan con el default_query_system_prompt de PrivateGPT
+    filtrado_por_rol = {
+        "estudiante": (
+            "ROL DEL USUARIO: ESTUDIANTE\n\n"
+            "FILTRADO CRITICO:\n"
+            "- SOLO usa documentos para ESTUDIANTES (reglamentos estudiantiles, procesos académicos estudiantiles, servicios estudiantiles, becas estudiantiles)\n"
+            "- IGNORA documentos para PROFESORES (reglamento docente, escalafón docente, evaluación docente)\n"
+            "- IGNORA documentos para PERSONAL ADMINISTRATIVO\n"
+            "- Si el contexto contiene SOLO información para profesores/administrativos, establece has_information=false"
+        ),
+        "profesor": (
+            "ROL DEL USUARIO: PROFESOR\n\n"
+            "FILTRADO CRITICO:\n"
+            "- SOLO usa documentos para PROFESORES (reglamento docente, escalafón docente, evaluación docente, procesos académicos para profesores)\n"
+            "- IGNORA documentos para ESTUDIANTES (procesos de matrícula estudiantil, servicios estudiantiles)\n"
+            "- IGNORA documentos para PERSONAL ADMINISTRATIVO\n"
+            "- Si el contexto contiene SOLO información para estudiantes/administrativos, establece has_information=false"
+        ),
+        "administrativo": (
+            "ROL DEL USUARIO: ADMINISTRATIVO\n\n"
+            "FILTRADO CRITICO:\n"
+            "- SOLO usa documentos para PERSONAL ADMINISTRATIVO (normativas administrativas, procedimientos administrativos, gestión universitaria)\n"
+            "- IGNORA documentos para ESTUDIANTES\n"
+            "- IGNORA documentos para PROFESORES\n"
+            "- Si el contexto contiene SOLO información para estudiantes/profesores, establece has_information=false"
+        ),
+        "externo": (
+            "ROL DEL USUARIO: EXTERNO\n\n"
+            "FILTRADO:\n"
+            "- Prioriza información general de la universidad\n"
+            "- Evita información muy específica de procesos internos\n"
+            "- Si el contexto contiene información muy específica de procesos internos, establece has_information=false"
+        ),
+        "postulante": (
+            "ROL DEL USUARIO: POSTULANTE\n\n"
+            "FILTRADO CRITICO:\n"
+            "- SOLO usa documentos sobre ADMISIÓN y POSTULACIÓN\n"
+            "- IGNORA documentos sobre procesos internos de estudiantes ya matriculados\n"
+            "- Si el contexto contiene SOLO información para estudiantes matriculados, establece has_information=false"
+        ),
+    }
+    
+    contexto_rol = filtrado_por_rol.get(rol, "ROL DEL USUARIO: GENERAL")
+    
+    # Construir mensajes: sistema con rol + usuario
+    # El default_query_system_prompt de PrivateGPT ya tiene las instrucciones de formato JSON
+    # Solo agregamos el contexto del rol específico
+    messages = [
+        {"role": "system", "content": contexto_rol},
+        {"role": "user", "content": user_text}
+    ]
+    
+    return messages
+
+
+def _get_student_name(student_data: Optional[Dict]) -> str:
+    """
+    Obtiene el nombre completo del estudiante desde student_data.
+    Busca en múltiples ubicaciones posibles.
+    
+    Args:
+        student_data: Datos completos del usuario desde data_unemi.json
+    
+    Returns:
+        Nombre completo del estudiante o cadena vacía si no se encuentra
+    """
+    if not student_data:
+        return ""
+    
+    # Prioridad 1: contexto.credenciales.nombre_completo
+    contexto = student_data.get("contexto", {})
+    if contexto:
+        credenciales = contexto.get("credenciales", {})
+        if credenciales:
+            nombre = credenciales.get("nombre_completo", "").strip()
+            if nombre:
+                return nombre
+    
+    # Prioridad 2: persona.nombres + apellidos
+    persona = student_data.get("persona", {})
+    if persona:
+        nombres = persona.get("nombres", "").strip()
+        apellido1 = persona.get("apellido1", "").strip()
+        apellido2 = persona.get("apellido2", "").strip()
+        if nombres:
+            nombre_completo = f"{nombres} {apellido1} {apellido2}".strip()
+            if nombre_completo:
+                return nombre_completo
+    
+    # Prioridad 3: datos_personales.nombres + apellidos
+    datos_personales = contexto.get("datos_personales", {}) if contexto else {}
+    if datos_personales:
+        nombres = datos_personales.get("nombres", "").strip()
+        apellido_paterno = datos_personales.get("apellido_paterno", "").strip()
+        apellido_materno = datos_personales.get("apellido_materno", "").strip()
+        if nombres:
+            nombre_completo = f"{nombres} {apellido_paterno} {apellido_materno}".strip()
+            if nombre_completo:
+                return nombre_completo
+    
+    # Prioridad 4: credenciales directo (sin contexto)
+    credenciales_directo = student_data.get("credenciales", {})
+    if credenciales_directo:
+        nombre = credenciales_directo.get("nombre_completo", "").strip()
+        if nombre:
+            return nombre
+    
+    return ""
+
+
+def _get_current_student_profile(student_data: Dict) -> Optional[Dict]:
+    """
+    Obtiene el perfil de estudiante activo principal del student_data.
+    
+    Prioriza perfiles con inscripcionprincipal=True, luego el más reciente.
+    """
+    if not student_data:
+        return None
+    
+    perfiles = student_data.get("perfiles", [])
+    if not perfiles:
+        # Intentar desde contexto si viene en formato diferente
+        contexto = student_data.get("contexto", {})
+        if contexto:
+            # Si viene del formato del API, no tiene perfiles directamente
+            return None
+    
+    # Buscar perfiles activos de estudiante
+    candidatos = [
+        p for p in perfiles
+        if p.get("status") and p.get("es_estudiante") and p.get("inscripcionprincipal")
+    ]
+    
+    # Si no hay principal, buscar cualquier estudiante activo
+    if not candidatos:
+        candidatos = [
+            p for p in perfiles
+            if p.get("status") and p.get("es_estudiante")
+        ]
+    
+    if not candidatos:
+        return None
+    
+    # Retornar el más reciente (por fecha_creacion)
+    return sorted(candidatos, key=lambda p: p.get("fecha_creacion") or "")[-1]
+
+
+def _answer_solicitudes_balcon(student_data: Dict, intent_slots: Dict) -> Dict[str, Any]:
+    """
+    Responde sobre las solicitudes del balcón consultando el servicio de solicitudes.
+    Usa el servicio de solicitudes para obtener datos actualizados.
+    """
+    # Obtener ID del solicitante desde student_data
+    solicitante_id = None
+    if student_data:
+        persona = student_data.get("persona", {})
+        solicitante_id = persona.get("id")
+    
+    # Si no hay ID, generar uno basado en cédula
+    if not solicitante_id:
+        cedula = (
+            student_data.get("datos_personales", {}).get("cedula") or
+            student_data.get("cedula") or
+            "0000000000"
+        )
         try:
-            client = get_privategpt_client()
-            import tempfile
-            import os
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                for chunk in uploaded_file.chunks():
-                    tmp_file.write(chunk)
-                tmp_path = tmp_file.name
-            
-            result = client.ingest_file(tmp_path)
-            os.unlink(tmp_path)
-            
-            if result.get("success", False) or "data" in result:
-                print(f"[PrivateGPT] ✅ Archivo ingestionado: {uploaded_file.name}")
-            else:
-                print(f"[PrivateGPT] ⚠️ Error al ingestionar archivo: {result.get('error', 'Unknown')}")
-        except Exception as e:
-            print(f"[PrivateGPT] ⚠️ Error al procesar archivo: {e}")
+            solicitante_id = int(cedula[-6:]) if len(cedula) >= 6 else hash(cedula) % 1000000
+        except:
+            solicitante_id = hash(str(cedula)) % 1000000
     
-    # 2. Detectar estado del flujo desde el historial
-    stage = "ready"  # ready, await_confirm, await_related_request, await_handoff_details
+    # Consultar solicitudes desde el servicio
+    try:
+        solicitudes = obtener_solicitudes_usuario(solicitante_id)
+    except Exception as e:
+        print(f"⚠️ [AnswerSolicitudes] Error obteniendo solicitudes: {e}")
+        solicitudes = []
+    
+    # Si no hay solicitudes desde el servicio, intentar desde student_data como fallback
+    if not solicitudes:
+        solicitudes_data = (
+            student_data.get("solicitudes_balcon") or 
+            student_data.get("solicitudes") or
+            student_data.get("contexto", {}).get("solicitudes") or
+            student_data.get("contexto", {}).get("solicitudes_balcon") or
+            []
+        )
+        
+        # Convertir formato de student_data al formato esperado
+        for s in solicitudes_data:
+            solicitudes.append({
+                "codigo": s.get("codigo_generado") or s.get("codigo") or "SIN CÓDIGO",
+                "estado_display": s.get("estado_display") or s.get("estado") or "Sin estado",
+                "nombre_servicio_minus": s.get("tipo") or s.get("descripcion", "")[:50] or "Sin servicio",
+                "fecha_creacion": s.get("fecha_creacion") or s.get("fecha") or "",
+                "fecha_creacion_v2": s.get("fecha_creacion_v2") or ""
+            })
+    
+    if not solicitudes:
+        return {
+            "summary": "No tienes solicitudes registradas en el Balcón de Servicios.",
+            "has_information": True,
+            "from_student_data": True,
+            "source_pdfs": [],
+            "fuentes": [],
+            "category": None,
+            "subcategory": None,
+            "confidence": 1.0,
+            "campos_requeridos": [],
+            "needs_confirmation": False,
+            "confirmed": True,
+            "intent_slots": intent_slots,
+        }
+    
+    # Formatear respuesta
+    lineas = []
+    for s in solicitudes:
+        codigo = s.get("codigo", "SIN CÓDIGO")
+        estado = s.get("estado_display", "Sin estado")
+        servicio = s.get("nombre_servicio_minus", "Solicitud General")
+        
+        # Formatear fecha
+        fecha_display = s.get("fecha_creacion_v2", "")
+        if not fecha_display:
+            fecha_str = s.get("fecha_creacion", "")
+            if fecha_str:
+                try:
+                    if "T" in fecha_str:
+                        fecha_obj = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
+                        fecha_display = fecha_obj.strftime("%d/%m/%Y")
+                    else:
+                        fecha_display = fecha_str[:10]
+                except:
+                    fecha_display = fecha_str[:10] if len(fecha_str) >= 10 else fecha_str
+        
+        linea = f"- **{codigo}** · {servicio} · {estado}"
+        if fecha_display:
+            linea += f" · {fecha_display}"
+        lineas.append(linea)
+    
+    texto = (
+        "Aquí tienes tus solicitudes en el Balcón de Servicios:\n\n" +
+        "\n".join(lineas) +
+        "\n\nPuedes preguntar por el estado de una solicitud específica o ver más detalles."
+    )
+    
+    return {
+        "summary": texto,
+        "has_information": True,
+        "from_student_data": True,
+        "source_pdfs": [],
+        "fuentes": [],
+        "category": None,
+        "subcategory": None,
+        "confidence": 1.0,
+        "campos_requeridos": [],
+        "needs_confirmation": False,
+        "confirmed": True,
+        "intent_slots": intent_slots,
+    }
+
+
+def _extract_carrera_data(student_data: Dict) -> Optional[Dict[str, str]]:
+    """
+    Extrae datos de carrera desde cualquier ubicación posible en student_data.
+    
+    Returns:
+        Dict con keys: carrera, facultad, modalidad, o None si no se encuentra
+    """
+    # Prioridad 1: informacion_academica directa
+    info_academica = student_data.get("informacion_academica", {})
+    if info_academica.get("carrera"):
+        return {
+            "carrera": info_academica.get("carrera", ""),
+            "facultad": info_academica.get("facultad", ""),
+            "modalidad": info_academica.get("modalidad", "")
+        }
+    
+    # Prioridad 2: contexto.informacion_academica
+    contexto = student_data.get("contexto", {})
+    if contexto:
+        info_academica = contexto.get("informacion_academica", {})
+        if info_academica.get("carrera"):
+            return {
+                "carrera": info_academica.get("carrera", ""),
+                "facultad": info_academica.get("facultad", ""),
+                "modalidad": info_academica.get("modalidad", "")
+            }
+    
+    # Prioridad 3: perfiles
+    perfil = _get_current_student_profile(student_data)
+    if perfil:
+        return {
+            "carrera": perfil.get("carrera_nombre", ""),
+            "facultad": perfil.get("facultad_nombre", ""),
+            "modalidad": perfil.get("modalidad_nombre", "")
+        }
+    
+    return None
+
+
+def _build_carrera_response(carrera_data: Dict[str, str], intent_slots: Dict) -> Dict[str, Any]:
+    """Construye la respuesta sobre carrera desde datos extraídos."""
+    carrera = carrera_data.get("carrera", "").strip()
+    facultad = carrera_data.get("facultad", "").strip()
+    modalidad = carrera_data.get("modalidad", "").strip()
+    
+    if not carrera:
+        return {
+            "summary": "No encuentro información de tu carrera en el sistema. Por favor, verifica que hayas seleccionado el perfil correcto.",
+            "has_information": False,
+            "from_student_data": True,
+            "source_pdfs": [],
+            "fuentes": [],
+            "category": None,
+            "subcategory": None,
+            "confidence": 1.0,
+            "campos_requeridos": [],
+            "needs_confirmation": False,
+            "confirmed": True,
+            "intent_slots": intent_slots,
+        }
+    
+    texto = f"Estás estudiando la carrera de **{carrera}**"
+    if facultad:
+        texto += f" en la **{facultad}**"
+    if modalidad:
+        texto += f", en modalidad **{modalidad}**"
+    texto += "."
+    
+    return {
+        "summary": texto,
+        "has_information": True,
+        "from_student_data": True,
+        "source_pdfs": [],
+        "fuentes": [],
+        "category": None,
+        "subcategory": None,
+        "confidence": 1.0,
+        "campos_requeridos": [],
+        "needs_confirmation": False,
+        "confirmed": True,
+        "intent_slots": intent_slots,
+    }
+
+
+def _answer_carrera_actual(student_data: Dict, intent_slots: Dict) -> Dict[str, Any]:
+    """
+    Responde sobre la carrera actual usando solo student_data.
+    No usa LLM ni PrivateGPT.
+    """
+    carrera_data = _extract_carrera_data(student_data)
+    if not carrera_data:
+        return {
+            "summary": "No encuentro información de tu carrera en el sistema. Por favor, verifica que hayas seleccionado el perfil correcto.",
+            "has_information": False,
+            "from_student_data": True,
+            "source_pdfs": [],
+            "fuentes": [],
+            "category": None,
+            "subcategory": None,
+            "confidence": 1.0,
+            "campos_requeridos": [],
+            "needs_confirmation": False,
+            "confirmed": True,
+            "intent_slots": intent_slots,
+        }
+    
+    return _build_carrera_response(carrera_data, intent_slots)
+
+
+def _answer_roles_usuario(student_data: Dict, intent_slots: Dict) -> Dict[str, Any]:
+    """
+    Responde sobre los roles/perfiles del usuario usando solo student_data.
+    No usa LLM ni PrivateGPT.
+    """
+    perfiles = student_data.get("perfiles", [])
+    if not perfiles:
+        # Intentar desde contexto
+        contexto = student_data.get("contexto", {})
+        if contexto:
+            return {
+                "summary": "No encuentro información de perfiles para este usuario.",
+                "has_information": False,
+                "from_student_data": True,
+                "source_pdfs": [],
+                "fuentes": [],
+                "category": None,
+                "subcategory": None,
+                "confidence": 1.0,
+                "campos_requeridos": [],
+                "needs_confirmation": False,
+                "confirmed": True,
+                "intent_slots": intent_slots,
+            }
+    
+    # Filtrar solo perfiles activos
+    perfiles_activos = [p for p in perfiles if p.get("status")]
+    
+    if not perfiles_activos:
+        return {
+            "summary": "No tienes perfiles activos registrados.",
+            "has_information": False,
+            "from_student_data": True,
+            "source_pdfs": [],
+            "fuentes": [],
+            "category": None,
+            "subcategory": None,
+            "confidence": 1.0,
+            "campos_requeridos": [],
+            "needs_confirmation": False,
+            "confirmed": True,
+            "intent_slots": intent_slots,
+        }
+    
+    roles = []
+    for p in perfiles_activos:
+        tipo = p.get("tipo") or "Sin tipo"
+        rol_parts = []
+        
+        if p.get("es_estudiante"):
+            rol_parts.append("Estudiante")
+        if p.get("es_profesor"):
+            rol_parts.append("Profesor")
+        if p.get("es_administrativo"):
+            rol_parts.append("Administrativo")
+        if p.get("es_externo"):
+            rol_parts.append("Externo")
+        
+        rol_str = " · ".join(rol_parts) if rol_parts else "Sin rol específico"
+        roles.append(f"- **{tipo}**: {rol_str}")
+    
+    texto = (
+        f"Tienes {len(perfiles_activos)} perfil(es) activo(s):\n\n" +
+        "\n".join(roles)
+    )
+    
+    return {
+        "summary": texto,
+        "has_information": True,
+        "from_student_data": True,
+        "source_pdfs": [],
+        "fuentes": [],
+        "category": None,
+        "subcategory": None,
+        "confidence": 1.0,
+        "campos_requeridos": [],
+        "needs_confirmation": False,
+        "confirmed": True,
+        "intent_slots": intent_slots,
+    }
+
+
+def _answer_datos_personales(student_data: Dict, intent_slots: Dict) -> Dict[str, Any]:
+    """
+    Responde sobre datos personales básicos usando solo student_data.
+    Solo muestra campos seguros (whitelist).
+    No usa LLM ni PrivateGPT.
+    """
+    # Obtener datos desde diferentes ubicaciones
+    persona = student_data.get("persona", {})
+    contexto = student_data.get("contexto", {})
+    credenciales = contexto.get("credenciales", {}) if contexto else {}
+    datos_personales = contexto.get("datos_personales", {}) if contexto else {}
+    
+    # Construir respuesta solo con campos seguros
+    partes = []
+    
+    # Nombre
+    nombre_completo = (
+        credenciales.get("nombre_completo") or
+        datos_personales.get("nombres") or
+        persona.get("nombres", "")
+    )
+    if nombre_completo:
+        apellido1 = datos_personales.get("apellido_paterno") or persona.get("apellido1", "")
+        apellido2 = datos_personales.get("apellido_materno") or persona.get("apellido2", "")
+        if apellido1 or apellido2:
+            nombre_completo = f"{nombre_completo} {apellido1} {apellido2}".strip()
+        partes.append(f"**Nombre completo**: {nombre_completo}")
+    
+    # Email institucional
+    email_inst = (
+        datos_personales.get("email") or
+        persona.get("emailinst") or
+        persona.get("email", "")
+    )
+    if email_inst:
+        partes.append(f"**Email institucional**: {email_inst}")
+    
+    if not partes:
+        return {
+            "summary": "No encuentro datos personales disponibles para mostrar.",
+            "has_information": False,
+            "from_student_data": True,
+            "source_pdfs": [],
+            "fuentes": [],
+            "category": None,
+            "subcategory": None,
+            "confidence": 1.0,
+            "campos_requeridos": [],
+            "needs_confirmation": False,
+            "confirmed": True,
+            "intent_slots": intent_slots,
+        }
+    
+    texto = "Aquí tienes tus datos personales:\n\n" + "\n".join(partes)
+    
+    return {
+        "summary": texto,
+        "has_information": True,
+        "from_student_data": True,
+        "source_pdfs": [],
+        "fuentes": [],
+        "category": None,
+        "subcategory": None,
+        "confidence": 1.0,
+        "campos_requeridos": [],
+        "needs_confirmation": False,
+        "confirmed": True,
+        "intent_slots": intent_slots,
+    }
+
+
+def _maybe_answer_with_student_data(intent_slots: Dict, student_data: Dict) -> Optional[Dict[str, Any]]:
+    """
+    Intenta responder usando solo student_data si el intent_code está en DATA_INTENTS.
+    
+    Retorna None si no se puede responder con datos, o un dict con la respuesta si sí.
+    """
+    if not student_data:
+        return None
+    
+    intent_code = intent_slots.get("intent_code", "").strip()
+    
+    if not intent_code or intent_code not in DATA_INTENTS:
+        return None
+    
+    print(f"📊 [Data Intent] Detectado intent_code: '{intent_code}' - Respondiendo con student_data")
+    
+    try:
+        if intent_code == "consultar_solicitudes_balcon":
+            return _answer_solicitudes_balcon(student_data, intent_slots)
+        
+        elif intent_code == "consultar_carrera_actual":
+            return _answer_carrera_actual(student_data, intent_slots)
+        
+        elif intent_code == "consultar_roles_usuario":
+            return _answer_roles_usuario(student_data, intent_slots)
+        
+        elif intent_code == "consultar_datos_personales":
+            return _answer_datos_personales(student_data, intent_slots)
+        
+    except Exception as e:
+        import traceback
+        print(f"⚠️ [Data Intent] Error al responder con student_data: {e}")
+        traceback.print_exc()
+        return None
+    
+    return None
+
+
+def _detect_stage_from_history(conversation_history: List[Dict]) -> tuple:
+    """
+    Detecta el stage actual y extrae información del historial.
+    
+    Returns:
+        Tuple (stage, pending_slots, handoff_channel)
+    """
+    stage = ConversationStage.AWAIT_INTENT.value
     pending_slots = None
     handoff_channel = None
     
-    print(f"🔍 [Stage Detection] Analizando historial de {len(conversation_history)} mensajes")
-    
-    # Buscar en el historial el último estado
     for i, msg in enumerate(reversed(conversation_history)):
         role = msg.get("role") or msg.get("who")
         if role not in ("bot", "assistant"):
@@ -603,30 +1069,26 @@ def classify_with_privategpt(
             handoff_sent_flag = meta.get("handoff_sent")
         
         if handoff_sent_flag:
-            stage = "ready"
+            stage = ConversationStage.AWAIT_INTENT.value
             pending_slots = None
             handoff_channel = None
             break
         
         if needs_handoff_details:
-            stage = "await_handoff_details"
+            stage = ConversationStage.AWAIT_HANDOFF_DETAILS.value
             if slot_payload:
                 pending_slots = slot_payload
-            if handoff_channel:
-                print(f"✅ [Stage Detection] Stage detectado: {stage}, handoff_channel: {handoff_channel}")
-                break
             if not handoff_channel:
                 handoff_channel = msg.get("handoff_channel")
-            print(f"✅ [Stage Detection] Stage detectado: {stage}, handoff_channel: {handoff_channel}")
             break
         
         if confirmed_status is False:
-            stage = "ready"
+            stage = ConversationStage.AWAIT_INTENT.value
             pending_slots = None
             break
         
         if needs_related_selection:
-            stage = "await_related_request"
+            stage = ConversationStage.AWAIT_RELATED_REQUEST.value
             if slot_payload:
                 pending_slots = slot_payload
             break
@@ -634,11 +1096,11 @@ def classify_with_privategpt(
         if slot_payload:
             pending_slots = slot_payload
             if needs_confirm:
-                stage = "await_confirm"
+                stage = ConversationStage.AWAIT_CONFIRM.value
             break
         
         if needs_confirm:
-            stage = "await_confirm"
+            stage = ConversationStage.AWAIT_CONFIRM.value
             history_list = list(conversation_history)
             bot_index = len(history_list) - i - 1
             if bot_index > 0:
@@ -649,8 +1111,467 @@ def classify_with_privategpt(
                     pending_slots = slots_prev
             break
     
+    return stage, pending_slots, handoff_channel
+
+
+def _recover_intent_slots(conversation_history: List[Dict], pending_slots: Optional[Dict]) -> Optional[Dict]:
+    """Recupera intent_slots desde el historial si no están en pending_slots."""
+    if pending_slots:
+        return pending_slots
+    
+    for msg in reversed(conversation_history):
+        role = msg.get("role") or msg.get("who")
+        if role not in ("bot", "assistant"):
+            continue
+        payload = msg.get("intent_slots")
+        if not payload:
+            meta = msg.get("meta") or {}
+            if isinstance(meta, dict):
+                payload = meta.get("intent_slots")
+        if payload:
+            return payload
+    
+    for msg in reversed(conversation_history):
+        role = msg.get("role") or msg.get("who")
+        if role in ("user", "student", "estudiante"):
+            prev_text = msg.get("content") or msg.get("text", "")
+            if prev_text:
+                return interpretar_intencion_principal(prev_text)
+    
+    return None
+
+
+def _recover_original_user_request(intent_slots: Optional[Dict], conversation_history: List[Dict], user_text: str) -> str:
+    """Recupera el mensaje original del usuario desde diferentes fuentes."""
+    if intent_slots:
+        original = intent_slots.get("original_user_message", "")
+        if original:
+            return original
+    
+    for msg in reversed(conversation_history):
+        role = msg.get("role") or msg.get("who")
+        if role in ("user", "student", "estudiante"):
+            msg_text = msg.get("content") or msg.get("text", "")
+            if msg_text and not es_confirmacion_positiva(msg_text) and not es_confirmacion_negativa(msg_text):
+                return msg_text
+    
+    return user_text
+
+
+def _build_handoff_response(
+    depto: str,
+    student_data: Optional[Dict],
+    category: Optional[str],
+    subcategory: Optional[str],
+    intent_slots: Optional[Dict],
+    reason: str = "Solicitud operativa que requiere intervención humana"
+) -> Dict[str, Any]:
+    """Construye respuesta de handoff."""
+    student_name = _get_student_name(student_data)
+    saludo_nombre = f"{student_name.split()[0]}, " if student_name else ""
+    ask_msg = (
+        f"{saludo_nombre}Entiendo que necesitas realizar una solicitud. Para procesarla correctamente, te voy a conectar con mis compañeros humanos del departamento **{depto}**. 💁\n\n"
+        f"Para enviar tu solicitud, necesito que:\n"
+        f"1. Describes nuevamente tu solicitud con todos los detalles\n"
+        f"2. Subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud"
+    )
+    
+    return {
+        "summary": ask_msg,
+        "category": category,
+        "subcategory": subcategory,
+        "confidence": 0.0,
+        "campos_requeridos": [],
+        "needs_confirmation": False,
+        "needs_handoff_details": True,
+        "needs_handoff_file": True,
+        "handoff_channel": depto,
+        "confirmed": True,
+        "intent_slots": intent_slots or {},
+        "handoff": True,
+        "handoff_reason": reason
+    }
+
+
+def _handle_confirmation_stage(
+    user_text: str,
+    pending_slots: Optional[Dict],
+    conversation_history: List[Dict],
+    category: Optional[str],
+    subcategory: Optional[str],
+    student_data: Optional[Dict],
+    perfil_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Maneja la etapa de confirmación cuando el usuario confirma."""
+    intent_slots = _recover_intent_slots(conversation_history, pending_slots)
+    
+    if not intent_slots:
+        return {
+            "category": None,
+            "subcategory": None,
+            "confidence": 0.0,
+            "summary": "No pude recuperar la intención confirmada. Dime de nuevo tu requerimiento, por favor.",
+            "campos_requeridos": [],
+            "needs_confirmation": False,
+            "confirmed": None
+        }
+    
+    original_user_request = _recover_original_user_request(intent_slots, conversation_history, user_text)
+    
+    intent_short = intent_slots.get("intent_short", "")
+    answer_type = _classify_answer_type_fallback(intent_short, intent_slots, original_user_request)
+    answer_type = _aplicar_excepciones_informativas(answer_type, intent_short, intent_slots, original_user_request)
+    
+    # Normalizar: mapear "procedimental" a "informativo" (ya no se usa "procedimental")
+    if answer_type == "procedimental":
+        answer_type = "informativo"
+    
+    # Guardar answer_type en intent_slots para que esté disponible en todo el flujo
+    intent_slots["answer_type"] = answer_type
+    if category:
+        intent_slots["category"] = category
+    if subcategory:
+        intent_slots["subcategory"] = subcategory
+    
+    print(f"🔍 [Análisis] Intención confirmada: '{intent_short[:80]}'")
+    print(f"   Tipo de respuesta: {answer_type} (guardado en intent_slots)")
+    
+    if answer_type == "operativo":
+        # Obtener category y subcategory desde LLM si no están disponibles
+        if not category or not subcategory:
+            try:
+                llm_classification = classify_with_llm(
+                    original_user_request, intent_short, category, subcategory, intent_slots, include_taxonomy=True
+                )
+                if not category:
+                    category = llm_classification.get("categoria") or llm_classification.get("category")
+                if not subcategory:
+                    subcategory = llm_classification.get("subcategoria") or llm_classification.get("subcategory")
+                print(f"📋 [Handoff] Category obtenida desde LLM: {category}")
+                print(f"📋 [Handoff] Subcategory obtenida desde LLM: {subcategory}")
+            except Exception as e:
+                print(f"⚠️ [Handoff] Error al obtener category/subcategory desde LLM: {e}")
+        
+        # Buscar solicitudes relacionadas antes de hacer handoff
+        if student_data:
+            print(f"🔍 [Handoff] Buscando solicitudes relacionadas...")
+            try:
+                related_requests_result = find_related_requests(
+                    user_request=original_user_request,
+                    intent_slots=intent_slots,
+                    student_data=student_data,
+                    max_results=3
+                )
+                
+                related_requests = related_requests_result.get("related_requests", [])
+                no_related = related_requests_result.get("no_related", False)
+                
+                print(f"📋 [Handoff] Solicitudes relacionadas encontradas: {len(related_requests)}")
+                
+                # Si hay solicitudes relacionadas, ofrecer relacionar
+                if related_requests and not no_related:
+                    primer_nombre = obtener_primer_nombre(student_data)
+                    mensaje_inicio = f"{primer_nombre}, " if primer_nombre else ""
+                    # Solo enviar mensaje introductorio, el frontend renderizará las solicitudes
+                    user_message = (
+                        f"{mensaje_inicio}He encontrado {len(related_requests)} solicitud(es) relacionada(s) con tu requerimiento:"
+                    )
+                    
+                    return {
+                        "summary": user_message,
+                        "category": category,
+                        "subcategory": subcategory,
+                        "confidence": 0.9,
+                        "campos_requeridos": [],
+                        "needs_confirmation": False,
+                        "needs_related_request_selection": True,
+                        "related_requests": related_requests,
+                        "no_related_request_option": True,
+                        "confirmed": True,
+                        "intent_slots": intent_slots,
+                        "source_pdfs": [],
+                        "fuentes": [],
+                        "has_information": False
+                    }
+            except Exception as e:
+                print(f"⚠️ [Handoff] Error al buscar solicitudes relacionadas: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        depto = _determinar_departamento_handoff(
+            user_text=original_user_request,
+            category=category,
+            subcategory=subcategory,
+            intent_slots=intent_slots,
+            student_data=student_data
+        )
+        return _build_handoff_response(depto, student_data, category, subcategory, intent_slots)
+    
+    if student_data:
+        data_answer = _maybe_answer_with_student_data(intent_slots, student_data)
+        if data_answer is not None:
+            return data_answer
+    
+    # Si es informativo, buscar solicitudes relacionadas y luego llamar a PrivateGPT
+    if answer_type == "informativo":
+        related_requests_result = find_related_requests(
+            user_request=original_user_request,
+            intent_slots=intent_slots,
+            student_data=student_data,
+            max_results=3
+        )
+        
+        solicitudes_previas = load_student_requests(student_data)
+        hay_solicitudes_previas = len(solicitudes_previas) > 0
+        
+        related_requests = related_requests_result.get("related_requests", [])
+        no_related = related_requests_result.get("no_related", False)
+        
+        if related_requests and not no_related:
+            user_message = related_requests_result.get("user_message", "")
+            if not user_message:
+                primer_nombre = obtener_primer_nombre(student_data)
+                mensaje_inicio = f"{primer_nombre}, " if primer_nombre else ""
+                user_message = f"{mensaje_inicio}He encontrado {len(related_requests)} solicitud(es) relacionada(s) con tu requerimiento:\n\n"
+                for i, req in enumerate(related_requests, 1):
+                    user_message += f"{i}. {req.get('display', req.get('id', 'Solicitud'))}\n"
+                user_message += "\n¿Deseas relacionar tu solicitud con alguna de estas? Si ninguna es relevante, puedes continuar sin relacionar."
+            
+            return {
+                "category": category,
+                "subcategory": subcategory,
+                "confidence": 0.85,
+                "summary": user_message,
+                "campos_requeridos": [],
+                "needs_confirmation": False,
+                "needs_related_request_selection": True,
+                "related_requests": related_requests,
+                "no_related_request_option": True,
+                "confirmed": True,
+                "intent_slots": intent_slots,
+                "reasoning": related_requests_result.get("reasoning", "")
+            }
+        elif hay_solicitudes_previas and no_related:
+            user_message = related_requests_result.get("user_message", "")
+            if not user_message:
+                primer_nombre = obtener_primer_nombre(student_data)
+                mensaje_inicio = f"{primer_nombre}, " if primer_nombre else ""
+                user_message = f"{mensaje_inicio}No he encontrado solicitudes relacionadas con tu requerimiento.\n\n¿Deseas continuar sin relacionar tu solicitud con ninguna solicitud previa?"
+            
+            return {
+                "category": category,
+                "subcategory": subcategory,
+                "confidence": 0.85,
+                "summary": user_message,
+                "campos_requeridos": [],
+                "needs_confirmation": False,
+                "needs_related_request_selection": True,
+                "related_requests": [],
+                "no_related_request_option": True,
+                "confirmed": True,
+                "intent_slots": intent_slots,
+                "reasoning": related_requests_result.get("reasoning", "No hay solicitudes relacionadas")
+            }
+        
+        # Si no hay solicitudes relacionadas o el usuario las rechazó, llamar a PrivateGPT
+        try:
+            privategpt_result = _call_privategpt_api(
+                user_text=original_user_request,
+                conversation_history=conversation_history,
+                category=None,
+                subcategory=None,
+                student_data=student_data,
+                perfil_id=perfil_id  # Usar perfil_id pasado como parámetro
+            )
+        except Exception as e:
+            print(f"❌ [PrivateGPT] Error: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        has_information = privategpt_result.get("has_information", False)
+        response_text = privategpt_result.get("response", "")
+        fuentes = privategpt_result.get("fuentes", [])
+        
+        if has_information:
+            source_pdfs = [f.get("archivo", "") for f in fuentes if f.get("archivo")]
+            source_pdfs = list(set(source_pdfs))
+            
+            return {
+                "summary": response_text,
+                "category": category,
+                "subcategory": subcategory,
+                "confidence": 0.9,
+                "campos_requeridos": [],
+                "needs_confirmation": False,
+                "confirmed": True,
+                "is_greeting": False,
+                "handoff": False,
+                "intent_slots": intent_slots,
+                "source_pdfs": source_pdfs,
+                "fuentes": fuentes,
+                "has_information": True,
+                "thinking_status": "Leyendo para dar una mejor respuesta"
+            }
+        else:
+            # No hay información, hacer handoff
+            depto = _determinar_departamento_handoff(
+                user_text=original_user_request,
+                category=category,
+                subcategory=subcategory,
+                intent_slots=intent_slots,
+                student_data=student_data
+            )
+            
+            student_name = _get_student_name(student_data)
+            saludo_nombre = f"{student_name.split()[0]}, " if student_name else ""
+            ask_msg = (
+                f"{saludo_nombre}Este caso necesita ser revisado por mis compañeros humanos del departamento **{depto}**. 💁\n\n"
+                f"Para enviar tu solicitud, por favor:\n"
+                f"1. Describe nuevamente tu requerimiento con todos los detalles.\n"
+                f"2. Sube un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud.\n\n"
+                f"Con esta información podré derivarlo al equipo correspondiente. ✔️"
+            )
+
+            
+            return {
+                "summary": ask_msg,
+                "category": category,
+                "subcategory": subcategory,
+                "confidence": 0.0,
+                "campos_requeridos": [],
+                "needs_confirmation": False,
+                "confirmed": True,
+                "is_greeting": False,
+                "handoff": True,
+                "handoff_reason": "No se encontró información en los documentos",
+                "handoff_channel": depto,
+                "handoff_sent": False,
+                "needs_handoff_details": True,
+                "needs_handoff_file": True,
+                "handoff_file_max_size_mb": 4,
+                "handoff_file_types": ["pdf", "jpg", "jpeg", "png"],
+                "handoff_auto": False,
+                "as_chat_message": True,
+                "allow_new_query": False,
+                "reset_context": False,
+                "intent_slots": intent_slots,
+                "source_pdfs": [],
+                "fuentes": [],
+                "has_information": False,
+                "department": depto
+            }
+
+
+def _determinar_departamento_handoff(
+    user_text: str,
+    category: str = None,
+    subcategory: str = None,
+    intent_slots: Dict = None,
+    student_data: Dict = None
+) -> str:
+    """
+    Determina el departamento al que se debe derivar la solicitud.
+    
+    Returns:
+        Nombre del departamento
+    """
+    # Intentar obtener departamento desde categoría/subcategoría
+    if category and subcategory:
+        depto = get_departamento_real(category, subcategory)
+        if depto:
+            print(f"🏢 [Handoff] Departamento desde categoría: {depto}")
+            return depto
+    
+    # Si hay intent_slots, intentar usar LLM para clasificar
+    if intent_slots:
+        intent_short = intent_slots.get("intent_short", "")
+        if intent_short:
+            try:
+                llm_classification = classify_with_llm(
+                    user_text, intent_short, category, subcategory, intent_slots
+                )
+                depto_llm = llm_classification.get("department")
+                if depto_llm:
+                    print(f"🏢 [Handoff] Departamento desde LLM: {depto_llm}")
+                    return depto_llm
+            except Exception as e:
+                print(f"⚠️ [Handoff] Error al usar LLM para determinar departamento: {e}")
+    
+    # Departamento por defecto
+    default_depto = "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
+    print(f"🏢 [Handoff] Usando departamento por defecto: {default_depto}")
+    return default_depto
+
+
+def classify_with_privategpt(
+    user_text: str,
+    conversation_history: List[Dict] = None,
+    category: str = None,
+    subcategory: str = None,
+    student_data: Dict = None,
+    uploaded_file: Any = None,
+    perfil_id: str = None
+) -> Dict[str, Any]:
+    """
+    Clasificador principal con flujo restaurado.
+    
+    Flujo:
+    1. Saludo → respuesta de bienvenida
+    2. Interpretar intención → pedir confirmación
+    3. Usuario confirma → buscar solicitudes relacionadas
+    4. Si hay solicitudes relacionadas → mostrar para selección
+    5. Si no hay o después de seleccionar → ENVIAR MENSAJE CONFIRMADO a PrivateGPT API
+    6. Si has_information=True → devolver respuesta con fuentes
+    7. Si has_information=False → determinar departamento y hacer handoff
+    
+    Args:
+        user_text: Mensaje del usuario
+        conversation_history: Historial de conversación
+        category: Categoría seleccionada (opcional)
+        subcategory: Subcategoría seleccionada (opcional)
+        student_data: Datos del estudiante (opcional)
+        uploaded_file: Archivo subido (opcional)
+    
+    Returns:
+        Dict con la respuesta del chat y metadatos
+    """
+    print(f"🎯 [classify_with_privategpt] ===== INICIO =====")
+    print(f"   Mensaje del usuario: '{user_text[:100]}'")
+    print(f"   Categoría: {category}")
+    print(f"   Subcategoría: {subcategory}")
+    print(f"   Historial: {len(conversation_history or [])} mensajes")
+    print(f"   Student data: {'Sí' if student_data else 'No'}")
+    
+    conversation_history = conversation_history or []
+    
+    # 1. Procesar archivo subido si existe
+    if uploaded_file:
+        try:
+            client = get_privategpt_client()
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+                for chunk in uploaded_file.chunks():
+                    tmp_file.write(chunk)
+                tmp_path = tmp_file.name
+            
+            result = client.ingest_file(tmp_path)
+            os.unlink(tmp_path)
+            
+            if result.get("success", False) or "data" in result:
+                print(f"[PrivateGPT] ✅ Archivo ingestionado: {uploaded_file.name}")
+            else:
+                print(f"[PrivateGPT] ⚠️ Error al ingestionar archivo: {result.get('error', 'Unknown')}")
+        except Exception as e:
+            print(f"[PrivateGPT] ⚠️ Error al procesar archivo: {e}")
+    
+    # 2. Detectar estado del flujo desde el historial
+    print(f"🔍 [Stage Detection] Analizando historial de {len(conversation_history)} mensajes")
+    stage, pending_slots, handoff_channel = _detect_stage_from_history(conversation_history)
+    
     print(f"📊 [Stage Detection] Stage final detectado: {stage}")
-    if stage == "await_handoff_details":
+    if stage == ConversationStage.AWAIT_HANDOFF_DETAILS.value:
         print(f"   handoff_channel: {handoff_channel}")
         print(f"   pending_slots: {pending_slots is not None}")
     
@@ -675,314 +1596,20 @@ def classify_with_privategpt(
         }
     
     # 4. Etapa de confirmación
-    if stage == "await_confirm":
+    if stage == ConversationStage.AWAIT_CONFIRM.value:
         if es_confirmacion_positiva(user_text):
-            # Usuario confirmó → buscar solicitudes relacionadas
-            # Recuperar slots de intención
-            intent_slots = pending_slots
-            if not intent_slots:
-                for msg in reversed(conversation_history):
-                    role = msg.get("role") or msg.get("who")
-                    if role not in ("bot", "assistant"):
-                        continue
-                    payload = msg.get("intent_slots")
-                    if not payload:
-                        meta = msg.get("meta") or {}
-                        if isinstance(meta, dict):
-                            payload = meta.get("intent_slots")
-                    if payload:
-                        intent_slots = payload
-                        break
-            
-            if not intent_slots:
-                for msg in reversed(conversation_history):
-                    role = msg.get("role") or msg.get("who")
-                    if role in ("user", "student", "estudiante"):
-                        prev_text = msg.get("content") or msg.get("text", "")
-                        if prev_text:
-                            intent_slots = interpretar_intencion_principal(prev_text)
-                            break
-            
-            if not intent_slots:
-                return {
-                    "category": None,
-                    "subcategory": None,
-                    "confidence": 0.0,
-                    "summary": "No pude recuperar la intención confirmada. Dime de nuevo tu requerimiento, por favor.",
-                    "campos_requeridos": [],
-                    "needs_confirmation": False,
-                    "confirmed": None
-                }
-            
-            # ===== ANALIZAR SI ES SOLICITUD O INFORMACIÓN =====
-            # Obtener el mensaje ORIGINAL del usuario para el análisis
-            original_user_request = None
-            if intent_slots:
-                original_user_request = intent_slots.get("original_user_message", "")
-            
-            if not original_user_request:
-                for msg in reversed(conversation_history):
-                    role = msg.get("role") or msg.get("who")
-                    if role in ("user", "student", "estudiante"):
-                        msg_text = msg.get("content") or msg.get("text", "")
-                        if msg_text and not es_confirmacion_positiva(msg_text) and not es_confirmacion_negativa(msg_text):
-                            original_user_request = msg_text
-                            break
-            
-            if not original_user_request:
-                original_user_request = user_text
-            
-            # Determinar si es solicitud (operativo) o información (informativo)
-            intent_short = intent_slots.get("intent_short", "")
-            answer_type = _classify_answer_type_fallback(intent_short, intent_slots)
-            
-            # Aplicar reglas de excepciones: ciertas solicitudes deben tratarse como información
-            answer_type = _aplicar_excepciones_informativas(answer_type, intent_short, intent_slots, original_user_request)
-            
-            print(f"🔍 [Análisis] Intención confirmada: '{intent_short[:80]}'")
-            print(f"   Tipo de respuesta: {answer_type}")
-            print(f"   Acción: {intent_slots.get('accion', 'N/A')}")
-            
-            # Si es SOLICITUD (operativo), hacer handoff directamente sin llamar a PrivateGPT
-            if answer_type == "operativo":
-                print(f"✅ [Handoff Directo] Es una solicitud operativa, derivando directamente a agente humano")
-                
-                depto = _determinar_departamento_handoff(
-                    user_text=original_user_request,
-                    category=category,
-                    subcategory=subcategory,
-                    intent_slots=intent_slots,
-                    student_data=student_data
-                )
-                
-                perfil = student_data or {}
-                student_name = (
-                    perfil.get("credenciales", {}).get("nombre_completo")
-                    if perfil.get("credenciales") else None
-                )
-                if not student_name:
-                    student_name = f"{perfil.get('apellidos', '')} {perfil.get('nombres', '')}".strip() or "—"
-                
-                saludo_nombre = f"{student_name.split()[0]}, " if student_name and student_name != '—' else ""
-                ask_msg = (
-                    f"{saludo_nombre}Entiendo que necesitas realizar una solicitud. Para procesarla correctamente, te voy a conectar con mis compañeros humanos del departamento **{depto}**. 💁\n\n"
-                    f"Para enviar tu solicitud, necesito que:\n"
-                    f"1. Describes nuevamente tu solicitud con todos los detalles\n"
-                    f"2. Subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud"
-                )
-                
-                print(f"🔀 [Handoff] Derivando solicitud a: {depto}")
-                
-                return {
-                    "summary": ask_msg,
-                    "category": category,
-                    "subcategory": subcategory,
-                    "confidence": 0.0,
-                    "campos_requeridos": [],
-                    "needs_confirmation": False,
-                    "needs_handoff_details": True,
-                    "needs_handoff_file": True,
-                    "handoff_channel": depto,
-                    "confirmed": True,
-                    "intent_slots": intent_slots,
-                    "handoff": True,
-                    "handoff_reason": "Solicitud operativa que requiere intervención humana"
-                }
-            
-            # Si es INFORMACIÓN (informativo), continuar con el flujo normal (buscar solicitudes relacionadas → PrivateGPT)
-            print(f"✅ [Información] Es una consulta informativa, continuando con búsqueda de información")
-            
-            # ===== BUSCAR SOLICITUDES RELACIONADAS =====
-            # original_user_request ya fue obtenido arriba en el análisis
-            
-            print(f"🔍 [Related Requests] Buscando solicitudes relacionadas...")
-            print(f"   Mensaje original del usuario: '{original_user_request[:100]}'")
-            
-            # Nota: El thinking_status "Buscando solicitudes relacionadas" se maneja en el frontend
-            # Buscar solicitudes relacionadas
-            related_requests_result = find_related_requests(
-                user_request=original_user_request,
-                intent_slots=intent_slots,
-                student_data=student_data,
-                max_results=3
+            return _handle_confirmation_stage(
+                user_text, pending_slots, conversation_history,
+                category, subcategory, student_data, perfil_id
             )
-            
-            print(f"🔍 [Related Requests] Resultado: {len(related_requests_result.get('related_requests', []))} solicitudes relacionadas")
-            
-            # Verificar si hay solicitudes previas del estudiante
-            solicitudes_previas = load_student_requests(student_data)
-            hay_solicitudes_previas = len(solicitudes_previas) > 0
-            
-            # Si hay solicitudes relacionadas, retornarlas para que el usuario seleccione
-            related_requests = related_requests_result.get("related_requests", [])
-            no_related = related_requests_result.get("no_related", False)
-            
-            if related_requests and not no_related:
-                # HAY solicitudes relacionadas: usar mensaje generado por el LLM
-                reasoning = related_requests_result.get("reasoning", "")
-                user_message = related_requests_result.get("user_message", "")
-                
-                # Si el LLM no generó mensaje, usar uno por defecto
-                if not user_message:
-                    primer_nombre = obtener_primer_nombre(student_data)
-                    mensaje_inicio = f"{primer_nombre}, " if primer_nombre else ""
-                    user_message = f"{mensaje_inicio}He encontrado {len(related_requests)} solicitud(es) relacionada(s) con tu requerimiento:\n\n"
-                    for i, req in enumerate(related_requests, 1):
-                        user_message += f"{i}. {req.get('display', req.get('id', 'Solicitud'))}\n"
-                    user_message += "\n¿Deseas relacionar tu solicitud con alguna de estas? Si ninguna es relevante, puedes continuar sin relacionar."
-                
-                return {
-                    "category": category,
-                    "subcategory": subcategory,
-                    "confidence": 0.85,
-                    "summary": user_message,  # Usar mensaje generado por el LLM
-                    "campos_requeridos": [],
-                    "needs_confirmation": False,
-                    "needs_related_request_selection": True,
-                    "related_requests": related_requests,
-                    "no_related_request_option": True,
-                    "confirmed": True,
-                    "intent_slots": intent_slots,
-                    "reasoning": reasoning,
-                    "thinking_status": "Pensando en una explicación para el usuario"  # Estado cuando se genera el mensaje
-                }
-            elif hay_solicitudes_previas and no_related:
-                # NO hay solicitudes relacionadas PERO hay solicitudes previas: usar mensaje generado por el LLM
-                user_message = related_requests_result.get("user_message", "")
-                
-                # Si el LLM no generó mensaje, usar uno por defecto
-                if not user_message:
-                    primer_nombre = obtener_primer_nombre(student_data)
-                    mensaje_inicio = f"{primer_nombre}, " if primer_nombre else ""
-                    user_message = f"{mensaje_inicio}No he encontrado solicitudes relacionadas con tu requerimiento.\n\n¿Deseas continuar sin relacionar tu solicitud con ninguna solicitud previa?"
-                
-                print(f"🔍 [Related Requests] No hay solicitudes relacionadas, pero hay {len(solicitudes_previas)} solicitudes previas. Mostrando opción para continuar.")
-                
-                return {
-                    "category": category,
-                    "subcategory": subcategory,
-                    "confidence": 0.85,
-                    "summary": user_message,  # Usar mensaje generado por el LLM
-                    "campos_requeridos": [],
-                    "needs_confirmation": False,
-                    "needs_related_request_selection": True,
-                    "related_requests": [],  # Lista vacía
-                    "no_related_request_option": True,  # Mostrar botón "No hay solicitud relacionada"
-                    "confirmed": True,
-                    "intent_slots": intent_slots,
-                    "reasoning": related_requests_result.get("reasoning", "No hay solicitudes relacionadas")
-                }
-            
-            # ===== NO HAY SOLICITUDES PREVIAS O NO HAY SOLICITUDES RELACIONADAS: Enviar mensaje confirmado a PrivateGPT API =====
-            print(f"✅ [PrivateGPT] No hay solicitudes relacionadas ni previas, enviando mensaje confirmado a la API")
-            print(f"   Mensaje confirmado: '{original_user_request[:100]}'")
-            
-            # Nota: El thinking_status se enviará en la respuesta después de llamar a PrivateGPT
-            privategpt_result = _call_privategpt_api(
-                user_text=original_user_request,  # SOLO el mensaje original del usuario, no el interpretado
-                conversation_history=conversation_history,
-                category=None,  # No enviar categoría a PrivateGPT
-                subcategory=None,  # No enviar subcategoría a PrivateGPT
-                student_data=None  # No enviar información del estudiante a PrivateGPT
-            )
-            
-            has_information = privategpt_result.get("has_information", False)
-            response_text = privategpt_result.get("response", "")
-            fuentes = privategpt_result.get("fuentes", [])
-            
-            # Si tiene información, devolver respuesta con fuentes
-            if has_information:
-                # Las fuentes ahora vienen agrupadas: [{"archivo": str, "paginas": [str, ...]}, ...]
-                source_pdfs = [f.get("archivo", "") for f in fuentes if f.get("archivo")]
-                source_pdfs = list(set(source_pdfs))  # Eliminar duplicados
-                
-                print(f"✅ [PrivateGPT] Respuesta con información encontrada")
-                print(f"   Fuentes agrupadas: {len(fuentes)}")
-                print(f"   PDFs únicos: {', '.join(source_pdfs)}")
-                
-                return {
-                    "summary": response_text,
-                    "category": category,
-                    "subcategory": subcategory,
-                    "confidence": 0.9,
-                    "campos_requeridos": [],
-                    "needs_confirmation": False,
-                    "confirmed": True,
-                    "is_greeting": False,
-                    "handoff": False,
-                    "intent_slots": intent_slots,
-                    "source_pdfs": source_pdfs,
-                    "fuentes": fuentes,
-                    "has_information": True,
-                    "thinking_status": "Leyendo para dar una mejor respuesta"  # Estado cuando se busca en documentos
-                }
-            
-            # Si NO tiene información, determinar departamento y hacer handoff
-            print(f"⚠️ [PrivateGPT] No se encontró información, derivando a agente humano")
-            
-            depto = _determinar_departamento_handoff(
-                user_text=original_user_request,
-            category=category,
-            subcategory=subcategory,
-                intent_slots=intent_slots,
-                student_data=student_data
-            )
-            
-            perfil = student_data or {}
-            student_name = (
-                perfil.get("credenciales", {}).get("nombre_completo")
-                if perfil.get("credenciales") else None
-            )
-            if not student_name:
-                student_name = f"{perfil.get('apellidos', '')} {perfil.get('nombres', '')}".strip() or "—"
-            
-            saludo_nombre = f"{student_name.split()[0]}, " if student_name and student_name != '—' else ""
-            ask_msg = (
-                f"{saludo_nombre}No tengo información suficiente para responder tu consulta. 😔\n\n"
-                f"¿Qué tal si te reviso con mis compañeros humanos del departamento **{depto}**? 💁\n\n"
-                f"Para enviar tu solicitud, necesito que:\n"
-                f"1. Describes nuevamente tu solicitud con todos los detalles\n"
-                f"2. Subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud"
-            )
-            
-            print(f"🔀 [Handoff] Derivando a: {depto}")
-            
-            return {
-                "summary": ask_msg,
-            "category": category,
-            "subcategory": subcategory,
-                "confidence": 0.0,
-                "campos_requeridos": [],
-                "needs_confirmation": False,
-                "confirmed": True,
-                "is_greeting": False,
-                "handoff": True,
-                "handoff_reason": "No se encontró información en los documentos",
-                "handoff_channel": depto,
-                "handoff_sent": False,
-                "needs_handoff_details": True,
-                "needs_handoff_file": True,
-                "handoff_file_max_size_mb": 4,
-                "handoff_file_types": ["pdf", "jpg", "jpeg", "png"],
-                "handoff_auto": False,
-                "as_chat_message": True,
-                "allow_new_query": False,
-                "reset_context": False,
-                "intent_slots": intent_slots,
-                "source_pdfs": [],
-                "fuentes": [],
-                "has_information": False,
-                "department": depto
-            }
-        
         elif es_confirmacion_negativa(user_text):
             return {
                 "category": None,
                 "subcategory": None,
                 "confidence": 0.0,
                 "summary": "Gracias por aclarar. Cuéntame nuevamente tu requerimiento en una frase y lo vuelvo a interpretar.",
-            "campos_requeridos": [],
-            "needs_confirmation": False,
+                "campos_requeridos": [],
+                "needs_confirmation": False,
                 "confirmed": False
             }
         else:
@@ -995,12 +1622,12 @@ def classify_with_privategpt(
                 "summary": _confirm_text_from_slots(slots),
                 "campos_requeridos": [],
                 "needs_confirmation": True,
-            "confirmed": None,
+                "confirmed": None,
                 "intent_slots": slots
             }
     
     # 5. Etapa de selección de solicitud relacionada
-    elif stage == "await_related_request":
+    elif stage == ConversationStage.AWAIT_RELATED_REQUEST.value:
         # El usuario puede seleccionar una solicitud o decir "no hay solicitud relacionada"
         user_text_str = str(user_text) if user_text is not None else ""
         user_text_lower = user_text_str.lower().strip()
@@ -1068,6 +1695,56 @@ def classify_with_privategpt(
         if not original_user_request:
             original_user_request = user_text
         
+        # Recuperar el answer_type desde intent_slots (ya fue determinado en la confirmación)
+        answer_type = intent_slots.get("answer_type") if intent_slots else None
+        
+        if not answer_type:
+            # Si no está en intent_slots, determinarlo ahora (fallback)
+            intent_short = intent_slots.get("intent_short", "") if intent_slots else ""
+            answer_type = _classify_answer_type_fallback(intent_short, intent_slots, original_user_request)
+            answer_type = _aplicar_excepciones_informativas(answer_type, intent_short, intent_slots, original_user_request)
+            # Normalizar: mapear "procedimental" a "informativo" (ya no se usa "procedimental")
+            if answer_type == "procedimental":
+                answer_type = "informativo"
+        
+        print(f"🔍 [Related Request] Tipo de respuesta: {answer_type} (desde confirmación)")
+        
+        # Si es operativo, ir directamente al handoff sin pasar por PrivateGPT
+        if answer_type == "operativo":
+            print(f"✅ [Related Request] Intención operativa, yendo directamente al handoff")
+            
+            # Recuperar category y subcategory desde intent_slots si están disponibles
+            if not category:
+                category = intent_slots.get("category") if intent_slots else None
+            if not subcategory:
+                subcategory = intent_slots.get("subcategory") if intent_slots else None
+            
+            # Si aún no están, obtenerlas desde LLM
+            if not category or not subcategory:
+                try:
+                    llm_classification = classify_with_llm(
+                        original_user_request, intent_slots.get("intent_short", ""), category, subcategory, intent_slots, include_taxonomy=True
+                    )
+                    if not category:
+                        category = llm_classification.get("categoria") or llm_classification.get("category")
+                    if not subcategory:
+                        subcategory = llm_classification.get("subcategoria") or llm_classification.get("subcategory")
+                    print(f"📋 [Handoff] Category obtenida desde LLM: {category}")
+                    print(f"📋 [Handoff] Subcategory obtenida desde LLM: {subcategory}")
+                except Exception as e:
+                    print(f"⚠️ [Handoff] Error al obtener category/subcategory desde LLM: {e}")
+            
+            # Ir directamente al handoff
+            depto = _determinar_departamento_handoff(
+                user_text=original_user_request,
+                category=category,
+                subcategory=subcategory,
+                intent_slots=intent_slots,
+                student_data=student_data
+            )
+            return _build_handoff_response(depto, student_data, category, subcategory, intent_slots)
+        
+        # Si es informativo, entonces sí llamar a PrivateGPT
         if user_said_no_related:
             # Usuario eligió continuar sin relacionar → Enviar mensaje confirmado a PrivateGPT API
             print(f"✅ [PrivateGPT] Usuario rechazó solicitudes relacionadas, enviando mensaje confirmado a la API")
@@ -1077,14 +1754,23 @@ def classify_with_privategpt(
             print(f"✅ [PrivateGPT] Usuario seleccionó solicitud relacionada, enviando mensaje confirmado a la API")
             print(f"   Mensaje confirmado: '{original_user_request[:100]}'")
         
-        # Enviar mensaje original del usuario a PrivateGPT API
-        privategpt_result = _call_privategpt_api(
-            user_text=original_user_request,  # SOLO el mensaje original del usuario, no el interpretado
-            conversation_history=conversation_history,
-            category=None,  # No enviar categoría a PrivateGPT
-            subcategory=None,  # No enviar subcategoría a PrivateGPT
-            student_data=None  # No enviar información del estudiante a PrivateGPT
-        )
+        # Enviar mensaje original del usuario a PrivateGPT API (solo para intenciones informativas)
+        print(f"   📍 [FLUJO] Punto de entrada (solicitud relacionada - informativo): Llamando a _call_privategpt_api()")
+        try:
+            privategpt_result = _call_privategpt_api(
+                user_text=original_user_request,  # SOLO el mensaje original del usuario, no el interpretado
+                conversation_history=conversation_history,
+                category=None,  # No enviar categoría a PrivateGPT
+                subcategory=None,  # No enviar subcategoría a PrivateGPT
+                student_data=student_data,  # Enviar student_data para contexto de rol
+                perfil_id=perfil_id  # Enviar perfil_id para identificar el perfil específico
+            )
+            print(f"   ✅ [FLUJO] _call_privategpt_api() retornó exitosamente")
+        except Exception as e:
+            print(f"   ❌ [FLUJO] Error al llamar a _call_privategpt_api(): {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         has_information = privategpt_result.get("has_information", False)
         response_text = privategpt_result.get("response", "")
@@ -1102,15 +1788,15 @@ def classify_with_privategpt(
             
             return {
                 "summary": response_text,
-            "category": category,
-            "subcategory": subcategory,
+                "category": category,
+                "subcategory": subcategory,
                 "confidence": 0.9,
-            "campos_requeridos": [],
-            "needs_confirmation": False,
+                "campos_requeridos": [],
+                "needs_confirmation": False,
                 "confirmed": True,
-            "is_greeting": False,
+                "is_greeting": False,
                 "handoff": False,
-            "intent_slots": intent_slots,
+                "intent_slots": intent_slots,
                 "source_pdfs": source_pdfs,
                 "fuentes": fuentes,
                 "has_information": True,
@@ -1128,23 +1814,16 @@ def classify_with_privategpt(
             student_data=student_data
         )
         
-        perfil = student_data or {}
-        student_name = (
-            perfil.get("credenciales", {}).get("nombre_completo")
-            if perfil.get("credenciales") else None
-        )
-        if not student_name:
-            student_name = f"{perfil.get('apellidos', '')} {perfil.get('nombres', '')}".strip() or "—"
-        
-        saludo_nombre = f"{student_name.split()[0]}, " if student_name and student_name != '—' else ""
+        student_name = _get_student_name(student_data)
+        saludo_nombre = f"{student_name.split()[0]}, " if student_name else ""
         ask_msg = (
-            f"{saludo_nombre}No tengo información suficiente para responder tu consulta. 😔\n\n"
-            f"¿Qué tal si te reviso con mis compañeros humanos del departamento **{depto}**? 💁\n\n"
-            f"Para enviar tu solicitud, necesito que:\n"
-            f"1. Describes nuevamente tu solicitud con todos los detalles\n"
-            f"2. Subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud"
+            f"{saludo_nombre}Este caso necesita ser revisado por mis compañeros humanos del departamento **{depto}**. 💁\n\n"
+            f"Para enviar tu solicitud, por favor:\n"
+            f"1. Describe nuevamente tu requerimiento con todos los detalles.\n"
+            f"2. Sube un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud.\n\n"
+            f"Con esta información podré derivarlo al equipo correspondiente. ✔️"
         )
-        
+
         print(f"🔀 [Handoff] Derivando a: {depto}")
         
         return {
@@ -1176,44 +1855,149 @@ def classify_with_privategpt(
         }
     
     # 6. Etapa de detalles de handoff (usuario proporciona detalles y archivo para enviar al departamento)
-    elif stage == "await_handoff_details":
+    elif stage == ConversationStage.AWAIT_HANDOFF_DETAILS.value:
         print(f"🔍 [Handoff Details] Procesando stage await_handoff_details")
         print(f"   user_text: '{user_text[:100]}'")
         print(f"   uploaded_file: {uploaded_file.name if uploaded_file else 'None'}")
         print(f"   handoff_channel: {handoff_channel}")
         
+        # Recuperar category y subcategory desde el historial si no están disponibles
+        if not category or not subcategory:
+            for msg in reversed(conversation_history):
+                role = msg.get("role") or msg.get("who")
+                if role in ("bot", "assistant"):
+                    msg_category = msg.get("category") or (msg.get("meta") or {}).get("category")
+                    msg_subcategory = msg.get("subcategory") or (msg.get("meta") or {}).get("subcategory")
+                    if msg_category and msg_subcategory:
+                        if not category:
+                            category = msg_category
+                        if not subcategory:
+                            subcategory = msg_subcategory
+                        break
+                    # También buscar en intent_slots si está disponible
+                    intent_slots_msg = msg.get("intent_slots") or (msg.get("meta") or {}).get("intent_slots")
+                    if intent_slots_msg and isinstance(intent_slots_msg, dict):
+                        # Intentar obtener desde slots si hay información de categoría
+                        if not category and intent_slots_msg.get("category"):
+                            category = intent_slots_msg.get("category")
+                        if not subcategory and intent_slots_msg.get("subcategory"):
+                            subcategory = intent_slots_msg.get("subcategory")
+        
+        print(f"   category recuperada: {category}")
+        print(f"   subcategory recuperada: {subcategory}")
+        
         # Verificar si el usuario ya proporcionó detalles y archivo
         details_text = (user_text or "").strip()
-        is_confirmation_only = es_confirmacion_positiva(details_text) or es_confirmacion_negativa(details_text)
         
-        # Verificar si tiene detalles sustanciales (no solo confirmación) y archivo
-        has_substantial_details = len(details_text) > 0 and not is_confirmation_only
+        # Lógica simple: si hay archivo, proceder (sin validar longitud del texto)
         has_file = uploaded_file is not None
         
         print(f"   details_text: '{details_text}'")
-        print(f"   is_confirmation_only: {is_confirmation_only}")
-        print(f"   has_substantial_details: {has_substantial_details} (len={len(details_text)})")
         print(f"   has_file: {has_file}")
         
-        if has_substantial_details and has_file:
-            # Usuario proporcionó detalles Y archivo → Enviar handoff y cerrar flujo
+        if has_file:
+            # Usuario proporcionó detalles Y archivo → Enviar handoff y crear solicitud
             print(f"✅ [Handoff] Usuario proporcionó detalles y archivo, enviando solicitud")
             print(f"   Detalles: '{details_text[:100]}'")
             print(f"   Archivo: {uploaded_file.name if uploaded_file else 'N/A'}")
             
-            # Aquí se enviaría la solicitud al sistema (por ahora solo confirmamos)
-            # TODO: Integrar con el sistema de solicitudes del balcón
+            # Establecer thinking_status antes de procesar
+            thinking_status_handoff = "Enviando solicitud a mis compañeros humanos"
             
-            # Obtener información del estudiante para el mensaje
-            perfil = student_data or {}
-            student_name = (
-                perfil.get("credenciales", {}).get("nombre_completo")
-                if perfil.get("credenciales") else None
-            )
-            if not student_name:
-                student_name = f"{perfil.get('apellidos', '')} {perfil.get('nombres', '')}".strip() or "—"
+            # Obtener información del estudiante
+            student_name = _get_student_name(student_data)
             
-            saludo_nombre = f"{student_name.split()[0]}, " if student_name and student_name != '—' else ""
+            # Obtener ID del solicitante desde student_data
+            solicitante_id = None
+            cedula = None
+            perfil_id = None
+            perfil_tipo = None
+            
+            if student_data:
+                persona = student_data.get("persona", {})
+                solicitante_id = persona.get("id")
+                cedula = (
+                    student_data.get("datos_personales", {}).get("cedula") or
+                    student_data.get("cedula") or
+                    persona.get("cedula")
+                )
+                
+                print(f"🔍 [Handoff] Cédula obtenida: {cedula}")
+                print(f"🔍 [Handoff] Solicitante ID: {solicitante_id}")
+                
+                # Obtener perfil activo
+                perfiles = student_data.get("perfiles", [])
+                print(f"🔍 [Handoff] Perfiles disponibles: {len(perfiles)}")
+                if perfiles:
+                    # Buscar perfil principal o el primero
+                    perfil_principal = next((p for p in perfiles if p.get("inscripcionprincipal")), perfiles[0])
+                    perfil_id = perfil_principal.get("id")
+                    print(f"🔍 [Handoff] Perfil ID seleccionado: {perfil_id}")
+                    
+                    # Obtener tipo de perfil desde inscripción
+                    inscripcion = perfil_principal.get("inscripcion", {})
+                    if isinstance(inscripcion, dict):
+                        carrera = inscripcion.get("carrera", {})
+                        if isinstance(carrera, dict):
+                            nombre_carrera = carrera.get("nombre", "")
+                            modalidad = inscripcion.get("modalidad", {})
+                            if isinstance(modalidad, dict):
+                                modalidad_nombre = modalidad.get("nombre", "")
+                                perfil_tipo = f"{nombre_carrera} {modalidad_nombre}".strip()
+                            else:
+                                perfil_tipo = nombre_carrera
+                    if not perfil_tipo:
+                        perfil_tipo = f"Perfil {perfil_id}"
+                    print(f"🔍 [Handoff] Perfil tipo: {perfil_tipo}")
+                else:
+                    print(f"⚠️ [Handoff] No se encontraron perfiles en student_data")
+            
+            # Si no hay ID, generar uno basado en cédula
+            if not solicitante_id:
+                if not cedula:
+                    cedula = "0000000000"
+                try:
+                    solicitante_id = int(cedula[-6:]) if len(cedula) >= 6 else hash(cedula) % 1000000
+                except:
+                    solicitante_id = hash(str(cedula)) % 1000000
+            
+            # Determinar servicio y sigla desde categoría/subcategoría
+            servicio_nombre = subcategory or category or "Solicitud General"
+            servicio_sigla = "GEN"
+            if category and subcategory:
+                # Generar sigla desde subcategoría (primeras 3 letras)
+                palabras = subcategory.split()
+                if palabras:
+                    servicio_sigla = "".join([p[:3].upper() for p in palabras[:2]])[:6]
+                else:
+                    servicio_sigla = subcategory[:6].upper()
+            
+            # Crear solicitud en el sistema
+            try:
+                solicitud = crear_solicitud(
+                    solicitante_id=solicitante_id,
+                    descripcion=details_text,
+                    tipo=2,  # SOLICITUD
+                    archivo_solicitud=uploaded_file,
+                    servicio_nombre=servicio_nombre,
+                    servicio_sigla=servicio_sigla,
+                    departamento=handoff_channel or "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+                    agente_id=None,
+                    agente_nombre="Sistema",
+                    carrera_id=None,
+                    requisitos=None,
+                    cedula=cedula,
+                    perfil_id=perfil_id,
+                    perfil_tipo=perfil_tipo
+                )
+                print(f"✅ [Handoff] Solicitud creada: {solicitud.get('codigo')} (ID: {solicitud.get('id')})")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"⚠️ [Handoff] Error al crear solicitud: {e}")
+                # Continuar aunque falle la creación de solicitud
+            
+            saludo_nombre = f"{student_name.split()[0]}, " if student_name else ""
             
             # Mensaje final de confirmación
             final_message = (
@@ -1240,29 +2024,14 @@ def classify_with_privategpt(
                 "intent_slots": pending_slots or {},
                 "source_pdfs": [],
                 "fuentes": [],
-                "has_information": False
+                "has_information": False,
+                "thinking_status": thinking_status_handoff  # Mostrar mensaje de envío
             }
-        elif has_substantial_details and not has_file:
-            # Tiene detalles pero falta archivo
-            print(f"⚠️ [Handoff Details] Usuario tiene detalles pero falta archivo")
+        elif not has_file:
+            # Falta archivo
+            print(f"⚠️ [Handoff Details] Usuario no ha subido archivo")
             return {
-                "summary": f"Perfecto, recibí los detalles de tu solicitud. Ahora necesito que subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud para poder procesarla.",
-                "category": category,
-                "subcategory": subcategory,
-                "confidence": 0.0,
-                "campos_requeridos": [],
-                "needs_confirmation": False,
-                "needs_handoff_details": True,
-                "needs_handoff_file": True,
-                "handoff_channel": handoff_channel,
-                "confirmed": True,
-                "intent_slots": pending_slots or {}
-            }
-        elif not has_substantial_details and has_file:
-            # Tiene archivo pero falta detalles
-            print(f"⚠️ [Handoff Details] Usuario tiene archivo pero falta detalles")
-            return {
-                "summary": "Gracias por subir el archivo. Ahora necesito que describas tu solicitud con todos los detalles para poder procesarla correctamente.",
+                "summary": f"Para enviar tu solicitud, necesito que subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud.",
                 "category": category,
                 "subcategory": subcategory,
                 "confidence": 0.0,
@@ -1275,12 +2044,11 @@ def classify_with_privategpt(
                 "intent_slots": pending_slots or {}
             }
         else:
-            # No tiene ni detalles ni archivo (o solo confirmación)
-            print(f"⚠️ [Handoff Details] Usuario no tiene detalles ni archivo (o solo confirmación)")
+            # No tiene archivo
+            print(f"⚠️ [Handoff Details] Usuario no ha subido archivo")
             print(f"   details_text: '{details_text}'")
-            print(f"   is_confirmation_only: {is_confirmation_only}")
             return {
-                "summary": "Para enviar tu solicitud, necesito que:\n1. Describes tu solicitud con todos los detalles\n2. Subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud",
+                "summary": "Para enviar tu solicitud, necesito que subas un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud.",
                 "category": category,
                 "subcategory": subcategory,
                 "confidence": 0.0,
@@ -1295,8 +2063,9 @@ def classify_with_privategpt(
     
     # 7. Estado inicial: Interpretar intención y pedir confirmación
     else:
-        # Verificar que realmente no estemos en un stage especial
-        if stage != "ready":
+        # Stage por defecto: await_intent o ready - ambos son válidos para interpretar intención
+        # await_intent es el stage por defecto cuando no hay ningún stage especial activo
+        if stage not in (ConversationStage.AWAIT_INTENT.value, "ready"):
             print(f"⚠️ [ERROR] Stage es '{stage}' pero no se manejó en las condiciones anteriores!")
         
         # Interpretar intención

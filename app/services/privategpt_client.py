@@ -21,15 +21,18 @@ def _load_privategpt_url() -> str:
             pass
     if not url:
         # URL por defecto (cuando se ejecuta con Docker)
-        url = "http://localhost:8001"
-    return url.rstrip("/")
+        url = "http://localhost:8001"  # Volver a 8001 hasta que PrivateGPT se reinicie en 8002
+    
+    final_url = url.rstrip("/")
+    return final_url
 
 
 # URL base de PrivateGPT API
 PRIVATEGPT_API_URL = _load_privategpt_url()
 
 # Timeout para requests (segundos)
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 30  # Aumentado a 30 segundos para respuestas del LLM
+HEALTH_CHECK_TIMEOUT = 5  # Timeout para health check (aumentado para dar más tiempo)
 
 
 class PrivateGPTClient:
@@ -45,7 +48,7 @@ class PrivateGPTClient:
         """
         self.base_url = base_url or PRIVATEGPT_API_URL
         self.timeout = timeout or REQUEST_TIMEOUT
-        self.session = requests.Session()
+        print(f"🔗 [PrivateGPT Client] Inicializado con URL: {self.base_url}, timeout: {self.timeout}s")
     
     def health_check(self) -> Dict[str, Any]:
         """
@@ -55,13 +58,24 @@ class PrivateGPTClient:
             Dict con status de la API
         """
         try:
-            response = self.session.get(
+            # Usar timeout más corto para health check
+            # Hacer petición directa sin Session para evitar conexiones bloqueadas
+            response = requests.get(
                 f"{self.base_url}/health",
-                timeout=self.timeout
+                timeout=HEALTH_CHECK_TIMEOUT,
+                headers={"Connection": "close"}  # Forzar cierre de conexión
             )
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.Timeout:
+            print(f"⏱️ [PrivateGPT Health] Timeout después de {HEALTH_CHECK_TIMEOUT}s")
+            return {
+                "status": "error",
+                "error": f"Timeout después de {HEALTH_CHECK_TIMEOUT}s",
+                "available": False
+            }
         except requests.exceptions.RequestException as e:
+            print(f"❌ [PrivateGPT Health] Error: {str(e)}")
             return {
                 "status": "error",
                 "error": str(e),
@@ -86,10 +100,11 @@ class PrivateGPTClient:
         try:
             with open(file_path, 'rb') as f:
                 files = {'file': (Path(file_path).name, f)}
-                response = self.session.post(
+                response = requests.post(
                     f"{self.base_url}/v1/ingest/file",
                     files=files,
-                    timeout=self.timeout * 2  # Más tiempo para archivos grandes
+                    timeout=self.timeout * 2,  # Más tiempo para archivos grandes
+                    headers={"Connection": "close"}
                 )
                 response.raise_for_status()
                 return response.json()
@@ -115,10 +130,11 @@ class PrivateGPTClient:
                 "file_name": file_name,
                 "text": text
             }
-            response = self.session.post(
+            response = requests.post(
                 f"{self.base_url}/v1/ingest/text",
                 json=data,
-                timeout=self.timeout
+                timeout=self.timeout,
+                headers={"Connection": "close"}
             )
             response.raise_for_status()
             return response.json()
@@ -133,7 +149,8 @@ class PrivateGPTClient:
         messages: List[Dict[str, str]],
         use_context: bool = True,
         include_sources: bool = True,
-        stream: bool = False
+        stream: bool = False,
+        session_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Envía un mensaje al chat de PrivateGPT con contexto de documentos.
@@ -143,6 +160,7 @@ class PrivateGPTClient:
             use_context: Si True, usa el contexto de documentos ingestionados
             include_sources: Si True, incluye fuentes en la respuesta
             stream: Si True, devuelve streaming (no implementado aún)
+            session_context: Contexto estructurado de la sesión (usuario, perfil, etc.)
         
         Returns:
             Dict con la respuesta del chat
@@ -155,28 +173,36 @@ class PrivateGPTClient:
                     "success": False
                 }
             
-            # Filtrar mensajes del sistema (PrivateGPT puede no soportarlos en algunos casos)
+            # Procesar mensajes manteniendo el contexto de sistema si existe
             filtered_messages = []
+            system_context = None
+            
             for msg in messages:
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
                 
-                # Si es mensaje de sistema, convertirlo a user con contexto
                 if role == "system":
-                    # Agregar el contexto del sistema al primer mensaje del usuario
-                    if filtered_messages and filtered_messages[0].get("role") == "user":
-                        filtered_messages[0]["content"] = f"[Contexto: {content}] {filtered_messages[0]['content']}"
-                    else:
-                        # Si no hay mensaje de usuario aún, crear uno
+                    # Guardar contexto del sistema para agregarlo al primer mensaje del usuario
+                    system_context = content
+                elif role in ("user", "assistant") and content:
+                    # Si hay contexto de sistema y es el primer mensaje de usuario, agregarlo
+                    if system_context and role == "user" and not filtered_messages:
                         filtered_messages.append({
                             "role": "user",
-                            "content": content
+                            "content": f"[Contexto del sistema: {system_context}]\n\n{str(content)}"
                         })
-                elif role in ("user", "assistant") and content:
-                    filtered_messages.append({
-                        "role": role,
-                        "content": str(content)
-                    })
+                        system_context = None  # Ya usado
+                    else:
+                        filtered_messages.append({
+                            "role": role,
+                            "content": str(content)
+                        })
+            
+            # Si quedó contexto de sistema sin usar, agregarlo al primer mensaje
+            if system_context and filtered_messages:
+                first_msg = filtered_messages[0]
+                if first_msg.get("role") == "user":
+                    first_msg["content"] = f"[Contexto del sistema: {system_context}]\n\n{first_msg['content']}"
             
             if not filtered_messages:
                 return {
@@ -190,36 +216,77 @@ class PrivateGPTClient:
                 "include_sources": include_sources,
                 "stream": stream
             }
+            if session_context:
+                data["session_context"] = session_context
             
-            response = self.session.post(
-                f"{self.base_url}/v1/chat/completions",
-                json=data,
-                timeout=self.timeout * 2  # Más tiempo para respuestas del LLM
-            )
+            endpoint_url = f"{self.base_url}/v1/chat/completions"
+            print(f"📤 [PrivateGPT] Haciendo POST a: {endpoint_url}")
+            print(f"   Payload: {json.dumps(data, indent=2, default=str)[:500]}...")
+            # Para chat completions, usar timeout más largo (60 segundos)
+            # ya que el LLM puede tardar en procesar y generar respuesta
+            chat_timeout = 60
+            print(f"   Timeout configurado: {chat_timeout}s (aumentado para respuestas del LLM)")
+            print(f"   Timestamp antes de petición: {__import__('time').time()}")
             
-            # Capturar detalles del error si hay
-            if response.status_code != 200:
-                error_detail = ""
-                try:
-                    error_json = response.json()
-                    error_detail = error_json.get("detail", str(error_json))
-                except:
-                    error_detail = response.text[:500]  # Primeros 500 caracteres
+            # Hacer la petición con timeout
+            # NO usar self.session para evitar conexiones bloqueadas
+            # Hacer petición directa con requests.post
+            # Cerrar explícitamente la conexión después de usar la respuesta
+            try:
+                print(f"   ⏳ Iniciando petición POST...")
+                print(f"   Usando conexión nueva (no persistente)...")
+                response = requests.post(
+                    endpoint_url,
+                    json=data,
+                    timeout=chat_timeout,  # 60 segundos para respuestas del LLM
+                    headers={
+                        "Content-Type": "application/json",
+                        "Connection": "close"  # Forzar cierre de conexión después de la petición
+                    }
+                )
+                print(f"   ✅ Petición completada")
+                print(f"📥 [PrivateGPT] Respuesta recibida - Status: {response.status_code}")
+                print(f"   Headers recibidos: {dict(response.headers)}")
                 
-                return {
-                    "error": f"{response.status_code} {response.reason}: {error_detail}",
-                    "success": False,
-                    "status_code": response.status_code
-                }
-            
-            response.raise_for_status()
-            return response.json()
+                try:
+                    # Capturar detalles del error si hay
+                    if response.status_code != 200:
+                        error_detail = ""
+                        try:
+                            error_json = response.json()
+                            error_detail = error_json.get("detail", str(error_json))
+                        except:
+                            error_detail = response.text[:500]  # Primeros 500 caracteres
+                        
+                        result = {
+                            "error": f"{response.status_code} {response.reason}: {error_detail}",
+                            "success": False,
+                            "status_code": response.status_code
+                        }
+                        return result
+                    
+                    response.raise_for_status()
+                    result = response.json()
+                    return result
+                finally:
+                    # Cerrar explícitamente la conexión para evitar acumulación
+                    response.close()
+            except requests.exceptions.Timeout as e:
+                print(f"   ❌ TIMEOUT: La petición excedió {chat_timeout}s")
+                print(f"   Error: {str(e)}")
+                print(f"   Esto puede indicar que PrivateGPT está procesando pero tarda mucho, o está bloqueado")
+                raise
+            except Exception as e:
+                print(f"   ❌ ERROR en petición POST: {type(e).__name__}: {str(e)}")
+                raise
         except requests.exceptions.Timeout:
             return {
-                "error": f"Timeout esperando respuesta de PrivateGPT (más de {self.timeout * 2}s)",
+                "error": f"Timeout esperando respuesta de PrivateGPT (más de 60s). El servidor puede estar procesando pero tarda mucho, o está bloqueado.",
                 "success": False
             }
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as e:
+            print(f"❌ [PrivateGPT] Error de conexión: {str(e)}")
+            print(f"   URL intentada: {self.base_url}/v1/chat/completions")
             return {
                 "error": f"No se pudo conectar con PrivateGPT en {self.base_url}. Verifica que el servicio esté ejecutándose.",
                 "success": False
@@ -256,10 +323,11 @@ class PrivateGPTClient:
                 "text": query,
                 "limit": limit
             }
-            response = self.session.post(
+            response = requests.post(
                 f"{self.base_url}/v1/chunks",
                 json=data,
-                timeout=self.timeout
+                timeout=self.timeout,
+                headers={"Connection": "close"}
             )
             response.raise_for_status()
             return response.json()
@@ -277,9 +345,10 @@ class PrivateGPTClient:
             Dict con lista de documentos
         """
         try:
-            response = self.session.get(
+            response = requests.get(
                 f"{self.base_url}/v1/ingest/list",
-                timeout=self.timeout
+                timeout=self.timeout,
+                headers={"Connection": "close"}
             )
             response.raise_for_status()
             return response.json()
@@ -300,9 +369,10 @@ class PrivateGPTClient:
             True si se eliminó correctamente, False en caso contrario
         """
         try:
-            response = self.session.delete(
+            response = requests.delete(
                 f"{self.base_url}/v1/ingest/{doc_id}",
-                timeout=self.timeout
+                timeout=self.timeout,
+                headers={"Connection": "close"}
             )
             response.raise_for_status()
             return True

@@ -1,0 +1,320 @@
+{
+  "solicitud_balcon_servicios": {
+    "descripcion": "Estructura completa de datos enviados al crear una solicitud del balcón de servicios",
+    "version": "1.0",
+    "fecha_analisis": "2024-12-21"
+  },
+  "datos_enviados_frontend": {
+    "endpoint": "POST /alumno/balcon_servicios",
+    "content_type": "multipart/form-data",
+    "campos_obligatorios": {
+      "action": {
+        "tipo": "string",
+        "valor": "addRequestService",
+        "descripcion": "Acción a ejecutar en el backend"
+      },
+      "service_id": {
+        "tipo": "string",
+        "valor": "ID_ENCRIPTADO",
+        "descripcion": "ID del ProcesoServicio seleccionado (encriptado)",
+        "ejemplo": "MTIzNDU2Nzg5MA=="
+      },
+      "tipo": {
+        "tipo": "integer",
+        "valor": "2",
+        "descripcion": "Tipo de solicitud: 1=INFORMACIÓN, 2=SOLICITUD",
+        "valores_posibles": {
+          "1": "INFORMACIÓN",
+          "2": "SOLICITUD"
+        }
+      },
+      "descripcion": {
+        "tipo": "string",
+        "valor": "Texto libre",
+        "descripcion": "Descripción de la solicitud del estudiante",
+        "ejemplo": "Solicito información sobre el proceso de titulación",
+        "validacion": "Campo obligatorio, no puede estar vacío"
+      }
+    },
+    "campos_opcionales": {
+      "solicitud": {
+        "tipo": "string",
+        "valor": "0 o ID_ENCRIPTADO",
+        "descripcion": "ID de solicitud relacionada (si existe)",
+        "ejemplo": "0 o MTIzNDU2Nzg5MQ==",
+        "nota": "Si es '0' significa que no hay solicitud relacionada"
+      },
+      "file_uprequest": {
+        "tipo": "file",
+        "descripcion": "Archivo de solicitud (solo si el proceso requiere subir solicitud)",
+        "condicion": "Solo se envía si proceso.subesolicitud = true",
+        "validaciones": {
+          "tamaño_maximo": "4194304 bytes (4 MB)",
+          "extensiones_permitidas": ["pdf", "jpg", "jpeg", "png"],
+          "obligatorio": "Sí, si el proceso requiere subir solicitud"
+        },
+        "ejemplo": {
+          "name": "solicitud_titulacion.pdf",
+          "size": 2048576,
+          "type": "application/pdf"
+        }
+      },
+      "file_requirement_{ID_ENCRIPTADO}": {
+        "tipo": "file",
+        "descripcion": "Archivos de requisitos configurados para el servicio",
+        "formato_nombre": "file_requirement_{ID_ENCRIPTADO_DEL_REQUISITO}",
+        "validaciones": {
+          "tamaño_maximo": "4194304 bytes (4 MB)",
+          "extensiones_permitidas": ["pdf"],
+          "obligatorio": "Depende de si el requisito está marcado como obligatorio"
+        },
+        "ejemplo": {
+          "file_requirement_MTIzNDU2Nzg5MQ==": {
+            "name": "kardex_academico.pdf",
+            "size": 1536000,
+            "type": "application/pdf",
+            "requisito": "KARDEX ACADÉMICO",
+            "obligatorio": true
+          },
+          "file_requirement_MTIzNDU2Nzg5Mg==": {
+            "name": "certificado_notas.pdf",
+            "size": 1024000,
+            "type": "application/pdf",
+            "requisito": "CERTIFICADO DE NOTAS",
+            "obligatorio": false
+          }
+        }
+      }
+    }
+  },
+  "ejemplo_completo_formdata": {
+    "action": "addRequestService",
+    "service_id": "MTIzNDU2Nzg5MA==",
+    "tipo": "2",
+    "descripcion": "Solicito información sobre el proceso de titulación y los requisitos necesarios",
+    "solicitud": "0",
+    "file_uprequest": "[File object: solicitud_titulacion.pdf, 2048576 bytes]",
+    "file_requirement_MTIzNDU2Nzg5MQ==": "[File object: kardex_academico.pdf, 1536000 bytes]",
+    "file_requirement_MTIzNDU2Nzg5Mg==": "[File object: certificado_notas.pdf, 1024000 bytes]"
+  },
+  "datos_procesados_backend": {
+    "obtenidos_del_token_jwt": {
+      "perfilprincipal": {
+        "id": "ID_ENCRIPTADO",
+        "descripcion": "ID del PerfilUsuario del estudiante"
+      },
+      "coordinacion": {
+        "id": "ID_ENCRIPTADO",
+        "descripcion": "ID de la Coordinación del estudiante"
+      },
+      "persona": {
+        "id": "ID_PERSONA",
+        "descripcion": "ID de la Persona (solicitante)"
+      },
+      "inscripcion": {
+        "carrera": {
+          "id": "ID_CARRERA",
+          "descripcion": "ID de la Carrera del estudiante"
+        }
+      }
+    },
+    "creacion_solicitud": {
+      "tabla": "balcon_solicitud",
+      "campos_creados": {
+        "descripcion": {
+          "origen": "request.POST['descripcion']",
+          "transformacion": "Se convierte a mayúsculas",
+          "ejemplo": "SOLICITO INFORMACIÓN SOBRE EL PROCESO DE TITULACIÓN"
+        },
+        "tipo": {
+          "origen": "request.POST['tipo']",
+          "valor": 2,
+          "descripcion": "Tipo de solicitud"
+        },
+        "solicitante": {
+          "origen": "eProfileUser.persona",
+          "descripcion": "Persona que realiza la solicitud"
+        },
+        "perfil": {
+          "origen": "eProfileUser",
+          "descripcion": "PerfilUsuario del estudiante"
+        },
+        "estado": {
+          "valor": 1,
+          "descripcion": "Estado inicial: INGRESADO"
+        },
+        "numero": {
+          "origen": "Último número de solicitud + 1",
+          "descripcion": "Número secuencial de solicitud del estudiante"
+        },
+        "archivo": {
+          "origen": "request.FILES['file_uprequest']",
+          "condicion": "Solo si proceso.subesolicitud = true",
+          "ruta_guardado": "solicitudbalcon/solicitud_{timestamp}_{nombre_archivo}",
+          "validaciones": {
+            "tamaño_maximo": "4 MB",
+            "extensiones": ["pdf", "jpg", "jpeg", "png"]
+          }
+        },
+        "solicitudasociada": {
+          "origen": "request.POST['solicitud']",
+          "condicion": "Solo si no es '0'",
+          "descripcion": "ID de solicitud relacionada (encriptado)"
+        },
+        "agente": {
+          "origen": "Asignación automática",
+          "logica": {
+            "prioridad_1": "Si existe director de carrera (CoordinadorCarrera tipo=3) para el periodo actual",
+            "prioridad_2": "Agente administrativo con menos solicitudes pendientes (admin=True, estado=True)"
+          }
+        }
+      }
+    },
+    "creacion_historial": {
+      "tabla": "balcon_historialsolicitud",
+      "campos_creados": {
+        "solicitud": {
+          "origen": "Solicitud recién creada",
+          "descripcion": "Referencia a la solicitud"
+        },
+        "servicio": {
+          "origen": "ProcesoServicio obtenido de service_id",
+          "descripcion": "Servicio seleccionado"
+        },
+        "carrera": {
+          "origen": "eProfileUser.inscripcion.carrera.id",
+          "descripcion": "Carrera del estudiante"
+        },
+        "asignadorecibe": {
+          "origen": "eBalconyRequest.agente.persona",
+          "descripcion": "Persona que recibirá la solicitud (agente asignado)"
+        },
+        "estado": {
+          "valor": 1,
+          "descripcion": "Estado inicial: INGRESADO"
+        }
+      }
+    },
+    "creacion_requisitos": {
+      "tabla": "balcon_requisitossolicitud",
+      "proceso": "Por cada requisito configurado en el servicio",
+      "campos_creados": {
+        "solicitud": {
+          "origen": "Solicitud recién creada",
+          "descripcion": "Referencia a la solicitud"
+        },
+        "requisito": {
+          "origen": "RequisitosConfiguracion del servicio",
+          "descripcion": "Requisito configurado"
+        },
+        "archivo": {
+          "origen": "request.FILES['file_requirement_{ID_ENCRIPTADO}']",
+          "ruta_guardado": "solicitudbalconrequisitos/{nombre_persona}_{nombre_requisito}_{timestamp}_{nombre_archivo}",
+          "validaciones": {
+            "obligatorio": "Si el requisito está marcado como obligatorio, debe existir el archivo"
+          }
+        }
+      }
+    },
+    "notificacion": {
+      "destinatario": "eBalconyRequest.agente.persona",
+      "titulo": "Solicitud de {solicitante} en balcón de servicios",
+      "cuerpo": "Ha recibido una solicitud de {solicitud}",
+      "tipo": "adm_solicitudbalcon",
+      "modulo": "sga",
+      "modelo": "Solicitud",
+      "object_id": "ID de la solicitud creada"
+    }
+  },
+  "validaciones_aplicadas": {
+    "solicitudes_pendientes": {
+      "validacion": "No permite crear nueva solicitud si tiene solicitudes en estado 1, 3 o 6 en el mismo servicio",
+      "query": "HistorialSolicitud.objects.filter((Q(solicitud__estado=1) | Q(solicitud__estado=3) | Q(solicitud__estado=6)), solicitud__solicitante_id=ePerson, solicitud__status=True, servicio=eProcessService)"
+    },
+    "archivo_solicitud": {
+      "condicion": "Solo si proceso.subesolicitud = true",
+      "validaciones": [
+        "Debe existir el archivo (obligatorio)",
+        "Tamaño máximo: 4 MB",
+        "Extensiones permitidas: pdf, jpg, jpeg, png"
+      ]
+    },
+    "archivos_requisitos": {
+      "proceso": "Por cada requisito configurado",
+      "validaciones": [
+        "Si es obligatorio, debe existir el archivo",
+        "Tamaño máximo: 4 MB",
+        "Extensiones permitidas: pdf"
+      ]
+    },
+    "agente": {
+      "validacion": "Debe existir al menos un agente activo",
+      "error": "No se existen agentes disponibles para atender su solicitud"
+    }
+  },
+  "flujo_completo": {
+    "paso_1": {
+      "accion": "Estudiante completa formulario en frontend",
+      "archivo": "src/routes/alu_solicitudbalcon/_formulario.svelte",
+      "funcion": "saveRequestServicess()"
+    },
+    "paso_2": {
+      "accion": "Frontend envía FormData",
+      "endpoint": "POST /alumno/balcon_servicios",
+      "metodo": "apiPOSTFormData"
+    },
+    "paso_3": {
+      "accion": "Backend recibe y valida",
+      "archivo": "api/views/alumno/balconservicio.py",
+      "metodo": "post()",
+      "accion_backend": "addRequestService"
+    },
+    "paso_4": {
+      "accion": "Backend crea registros",
+      "tablas": [
+        "balcon_solicitud",
+        "balcon_historialsolicitud",
+        "balcon_requisitossolicitud (múltiples)"
+      ]
+    },
+    "paso_5": {
+      "accion": "Backend envía notificación",
+      "destinatario": "Agente asignado",
+      "tipo": "adm_solicitudbalcon"
+    },
+    "paso_6": {
+      "accion": "Respuesta al frontend",
+      "respuesta": {
+        "isSuccess": true,
+        "data": {
+          "urlservice": "URL del servicio si está configurada"
+        }
+      }
+    }
+  },
+  "estructura_respuesta_backend": {
+    "exito": {
+      "isSuccess": true,
+      "data": {
+        "urlservice": "URL del servicio (puede ser null o string)"
+      },
+      "status": 200
+    },
+    "error": {
+      "isSuccess": false,
+      "data": {},
+      "message": "Mensaje de error descriptivo",
+      "status": 200
+    }
+  },
+  "notas_importantes": {
+    "encriptacion": "Los IDs se envían encriptados usando la función encrypt()",
+    "archivos": "Los archivos se envían como FormData, no como JSON",
+    "asignacion_agente": "La asignación de agente es automática según la lógica de prioridades",
+    "estado_inicial": "Todas las solicitudes inician en estado 1 (INGRESADO)",
+    "numero_secuencial": "El número de solicitud es secuencial por estudiante, no global",
+    "notificacion": "La notificación se envía automáticamente al agente asignado"
+  }
+}
+
+

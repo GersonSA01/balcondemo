@@ -2,7 +2,7 @@
 """Configuración central y cliente LLM."""
 import os
 from pathlib import Path
-import os
+from typing import Dict, Any
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
@@ -61,7 +61,7 @@ FEATURE_FLAGS = {
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
 # PrivateGPT API Configuration
-PRIVATEGPT_API_URL = os.getenv("PRIVATEGPT_API_URL", "http://localhost:8001")
+PRIVATEGPT_API_URL = os.getenv("PRIVATEGPT_API_URL", "http://localhost:8001")  # Volver a 8001 hasta que PrivateGPT se reinicie en 8002
 
 # Rate-limit guard para evitar 429 (respeta 'retry in N seconds' si está presente)
 import re
@@ -105,32 +105,141 @@ async def _take_token_async():
 
 def _take_token_sync():
     global _bucket_tokens
+    first_wait = True
     while True:
         with _bucket_lock:
             _maybe_refill_bucket()
             if _bucket_tokens > 0:
+                tokens_before = _bucket_tokens
                 _bucket_tokens -= 1
+                if not first_wait:
+                    print(f"✅ [Rate Limit] Token obtenido. Tokens restantes: {_bucket_tokens}")
                 return
             wait_s = max(0.0, 60 - (time.monotonic() - _bucket_last_reset))
+        
+        if first_wait:
+            print(f"⚠️ [Rate Limit] Límite de 9 RPM alcanzado. Tokens disponibles: 0")
+            print(f"   Esperando {wait_s:.1f} segundos antes de la próxima llamada al LLM...")
+            first_wait = False
+        
         import time as _t
-        _t.sleep(wait_s + 0.01)
+        _t.sleep(min(wait_s + 0.01, 1.0))  # Dormir máximo 1 segundo a la vez para mostrar progreso
 
 
 def llm_budget_remaining() -> int:
+    """Retorna la cantidad de tokens disponibles en el bucket."""
     with _bucket_lock:
         _maybe_refill_bucket()
         return _bucket_tokens
 
-def guarded_invoke(llm_client, msgs):
-    try:
-        _take_token_sync()
-        return llm_client.invoke(msgs)
-    except ResourceExhausted as e:
-        m = re.search(r"retry in (\d+)", str(e).lower())
-        wait_s = int(m.group(1)) + 1 if m else 60
-        import time
-        time.sleep(wait_s)
-        return llm_client.invoke(msgs)
+def get_rate_limit_status() -> Dict[str, Any]:
+    """Retorna información detallada del estado del rate limiting."""
+    with _bucket_lock:
+        _maybe_refill_bucket()
+        now = time.monotonic()
+        elapsed = now - _bucket_last_reset
+        remaining_in_bucket = max(0.0, 60 - elapsed)
+        return {
+            "tokens_available": _bucket_tokens,
+            "tokens_max": 9,
+            "elapsed_seconds": elapsed,
+            "reset_in_seconds": remaining_in_bucket,
+            "percentage_used": ((60 - remaining_in_bucket) / 60) * 100 if remaining_in_bucket > 0 else 0
+        }
+
+def guarded_invoke(llm_client, msgs, max_retries: int = 2):
+    """
+    Invoca el LLM con protección de rate limiting.
+    
+    Args:
+        llm_client: Cliente del LLM
+        msgs: Mensaje o prompt a enviar
+        max_retries: Número máximo de reintentos después de error 429
+    
+    Returns:
+        Respuesta del LLM
+    """
+    retry_count = 0
+    
+    while retry_count <= max_retries:
+        # Mostrar tokens disponibles antes de tomar
+        tokens_available = llm_budget_remaining()
+        if tokens_available == 0:
+            print(f"⚠️ [Rate Limit Guard] Sin tokens disponibles. Esperando...")
+        else:
+            if retry_count == 0:
+                print(f"🔑 [Rate Limit Guard] Tokens disponibles: {tokens_available}/9")
+            else:
+                print(f"🔑 [Rate Limit Guard] Reintento {retry_count}/{max_retries}. Tokens disponibles: {tokens_available}/9")
+        
+        try:
+            # Solo tomar token en el primer intento o si ya pasó tiempo suficiente
+            if retry_count == 0:
+                _take_token_sync()
+            else:
+                # En reintentos, verificar si tenemos tokens sin tomarlos todavía
+                # porque ya los usamos en el primer intento
+                tokens_available = llm_budget_remaining()
+                if tokens_available == 0:
+                    print(f"⚠️ [Rate Limit Guard] Sin tokens para reintento. Esperando...")
+                    _take_token_sync()
+                else:
+                    # Usar un token del bucket para el reintento
+                    _take_token_sync()
+            
+            print(f"⏳ [Rate Limit Guard] Llamando al LLM... (intento {retry_count + 1})")
+            result = llm_client.invoke(msgs)
+            tokens_remaining = llm_budget_remaining()
+            print(f"✅ [Rate Limit Guard] LLM respondió exitosamente. Tokens restantes: {tokens_remaining}/9")
+            return result
+            
+        except ResourceExhausted as e:
+            retry_count += 1
+            error_msg = str(e)
+            print(f"❌ [Rate Limit Guard] ResourceExhausted (intento {retry_count}):")
+            print(f"   Error: {error_msg[:200]}...")
+            
+            # Extraer tiempo de espera del error
+            m = re.search(r"retry in (\d+(?:\.\d+)?)", error_msg.lower())
+            wait_s = float(m.group(1)) + 1 if m else 60
+            
+            # Extraer información del límite si está disponible
+            quota_match = re.search(r"limit:\s*(\d+)", error_msg.lower())
+            limit = quota_match.group(1) if quota_match else "desconocido"
+            
+            if retry_count > max_retries:
+                print(f"❌ [Rate Limit Guard] Se alcanzó el máximo de reintentos ({max_retries})")
+                print(f"   Límite de la API: {limit} requests por minuto")
+                print(f"   Por favor, espera unos momentos antes de intentar nuevamente.")
+                raise RuntimeError(
+                    f"Límite de cuota excedido (máximo {limit} requests/minuto). "
+                    f"Por favor, espera unos momentos antes de intentar nuevamente."
+                )
+            
+            print(f"⏳ [Rate Limit Guard] Esperando {wait_s:.1f} segundos según el error de la API...")
+            print(f"   Límite de la API: {limit} requests por minuto")
+            print(f"   Reintento {retry_count}/{max_retries} en {wait_s:.1f}s...")
+            
+            import time
+            # Esperar en bloques para mostrar progreso
+            waited = 0
+            while waited < wait_s:
+                sleep_time = min(1.0, wait_s - waited)
+                time.sleep(sleep_time)
+                waited += sleep_time
+                if waited < wait_s:
+                    remaining = wait_s - waited
+                    print(f"   ⏳ Esperando... {remaining:.1f}s restantes")
+            
+            print(f"🔄 [Rate Limit Guard] Reintentando llamada al LLM...")
+            
+        except Exception as e:
+            # Otros errores no relacionados con rate limiting
+            print(f"❌ [Rate Limit Guard] Error inesperado: {type(e).__name__}: {str(e)}")
+            raise
+    
+    # No debería llegar aquí, pero por si acaso
+    raise RuntimeError("Error al invocar LLM después de múltiples intentos")
 
 async def guarded_ainvoke(llm_client, msgs):
     try:
@@ -141,4 +250,38 @@ async def guarded_ainvoke(llm_client, msgs):
         wait_s = int(m.group(1)) + 1 if m else 60
         await asyncio.sleep(wait_s)
         return await llm_client.ainvoke(msgs)
+
+
+# Funciones de encriptación simple para IDs (simulación)
+import base64
+
+def encrypt(value):
+    """Encripta un valor (ID) para simulación."""
+    if value is None:
+        return None
+    try:
+        # Convertir a string y codificar en base64
+        encoded = base64.b64encode(str(value).encode()).decode()
+        return encoded
+    except Exception:
+        return str(value)
+
+def decrypt(encrypted_value):
+    """Desencripta un valor encriptado."""
+    if encrypted_value is None:
+        return None
+    try:
+        # Decodificar desde base64
+        decoded = base64.b64decode(encrypted_value.encode()).decode()
+        # Intentar convertir a int si es posible
+        try:
+            return int(decoded)
+        except ValueError:
+            return decoded
+    except Exception:
+        # Si falla, intentar usar directamente como int
+        try:
+            return int(encrypted_value)
+        except (ValueError, TypeError):
+            return encrypted_value
 

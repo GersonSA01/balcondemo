@@ -1,5 +1,5 @@
 <script>
-  // Inicializar con saludo genérico
+  // Inicializar con saludo genérico dinámico
   let messages = [
     { who: "bot", text: "¡Hola! 👋 Cuéntame tu solicitud en lenguaje natural y te guío al trámite correcto." }
   ];
@@ -8,6 +8,8 @@
   let currentCategory = null;
   let currentSubcategory = null;
   let studentData = null;
+  let profileType = "estudiante";
+  let profileId = null;
   let needsConfirmation = false;
   let needsRelatedRequestSelection = false;
   let relatedRequests = [];
@@ -22,12 +24,20 @@
   let thinkingKey = 0; // Key para forzar re-render y animación suave
   
   // Función exportada para recibir categoría desde el padre
-  export function selectCategory(category, subcategory, dataEstudiante = null) {
+  export function selectCategory(category, subcategory, dataEstudiante = null, newProfileType = null, profileMeta = null) {
     currentCategory = category;
     currentSubcategory = subcategory;
-    studentData = dataEstudiante;
+    if (newProfileType) {
+      profileType = newProfileType;
+    }
+    if (dataEstudiante !== undefined) {
+      studentData = dataEstudiante;
+    }
+    if (profileMeta && profileMeta.profileId) {
+      profileId = profileMeta.profileId;
+    }
     
-    const greeting = generateDynamicGreeting(category, subcategory, dataEstudiante);
+    const greeting = generateDynamicGreeting(category, subcategory, studentData);
     messages = [{ who: "bot", text: greeting }];
     conversationBlocked = false; // Resetear bloqueo
     needsConfirmation = false;
@@ -41,8 +51,26 @@
     });
   }
 
+  export function updateProfileContext(newProfileType = "estudiante", data = null, profileMeta = null) {
+    profileType = newProfileType || "estudiante";
+    if (data !== null) {
+      studentData = data;
+    }
+    if (profileMeta && profileMeta.profileId) {
+      profileId = profileMeta.profileId;
+    }
+  }
+
   function generateDynamicGreeting(category, subcategory, dataEstudiante = null) {
-    const nombreEstudiante = dataEstudiante?.credenciales?.nombre_completo?.split(' ')[0] || "";
+    let nombreFuente = dataEstudiante?.credenciales?.nombre_completo;
+    if (!nombreFuente && dataEstudiante?.datos_personales) {
+      const partes = [
+        dataEstudiante.datos_personales.nombres || "",
+        dataEstudiante.datos_personales.apellido_paterno || ""
+      ].filter(Boolean);
+      nombreFuente = partes.join(" ").trim();
+    }
+    const nombreEstudiante = nombreFuente ? nombreFuente.split(" ")[0] : "";
     const saludo = nombreEstudiante ? `¡Hola ${nombreEstudiante}! 👋` : "¡Hola! 👋";
     
     const greetings = {
@@ -124,6 +152,7 @@
   async function selectRelatedRequest(requestId = null){
     sending = true;
     needsRelatedRequestSelection = false;
+    selectedRelatedRequestId = "none"; // Resetear selección
     abortController = new AbortController();
     
     // Después de seleccionar solicitud relacionada, buscar en documentos
@@ -158,9 +187,15 @@
         requestBody.subcategory = currentSubcategory;
       }
       
-      if (studentData) {
-        requestBody.student_data = studentData;
-      }
+        if (studentData) {
+          requestBody.student_data = studentData;
+        }
+        if (profileType) {
+          requestBody.profile_type = profileType;
+        }
+        if (profileId) {
+          requestBody.perfil_id = profileId;
+        }
       
       const res = await fetch("/api/chat/", {
         method: "POST",
@@ -174,6 +209,12 @@
       if (data.thinking_status) {
         stopThinkingStatusUpdate();
         thinkingStatus = data.thinking_status;
+      } else if (data.needs_handoff_details || data.handoff_sent) {
+        // Si es handoff, mantener el mensaje establecido (ya se estableció antes en send())
+        stopThinkingStatusUpdate();
+        if (data.handoff_sent) {
+          thinkingStatus = "Enviando solicitud a mis compañeros humanos";
+        }
       } else {
         stopThinkingStatusUpdate();
         if (data.needs_related_request_selection) {
@@ -250,8 +291,15 @@
     sending = true;
     abortController = new AbortController();
     
-    // Iniciar con interpretación de intención
-    startIntentParsing();
+    // Si está enviando handoff con archivo, mostrar mensaje de envío
+    if (needsHandoffFile && selectedFile) {
+      thinkingKey += 1;
+      thinkingStatus = "Enviando solicitud a mis compañeros humanos";
+      stopThinkingStatusUpdate(); // Detener cualquier actualización anterior
+    } else {
+      // Iniciar con interpretación de intención
+      startIntentParsing();
+    }
     
     await processMessage(text);
     
@@ -273,9 +321,9 @@
       elapsed += 1;
       thinkingKey += 1; // Forzar re-render para animación suave
       if (elapsed < 3) {
-        thinkingStatus = "Buscando solicitudes relacionadas";
+        thinkingStatus = "Analizando tus solicitudes anteriores";
       } else {
-        thinkingStatus = "Pensando en una explicación para el usuario";
+        thinkingStatus = "Buscando coincidencias";
       }
     }, 1000);
   }
@@ -331,6 +379,12 @@
         if (studentData) {
           formData.append("student_data", JSON.stringify(studentData));
         }
+        if (profileType) {
+          formData.append("profile_type", profileType);
+        }
+        if (profileId) {
+          formData.append("perfil_id", profileId);
+        }
         
         body = formData;
         // No establecer Content-Type, el navegador lo hace automáticamente con el boundary
@@ -348,6 +402,10 @@
         
         if (studentData) {
           requestBody.student_data = studentData;
+        }
+        
+        if (profileType) {
+          requestBody.profile_type = profileType;
         }
         
         headers["Content-Type"] = "application/json";
@@ -509,9 +567,15 @@
         requestBody.subcategory = currentSubcategory;
       }
       
-      if (studentData) {
-        requestBody.student_data = studentData;
-      }
+        if (studentData) {
+          requestBody.student_data = studentData;
+        }
+        if (profileType) {
+          requestBody.profile_type = profileType;
+        }
+        if (profileId) {
+          requestBody.perfil_id = profileId;
+        }
       
       const res = await fetch("/api/chat/", {
         method: "POST",
@@ -590,10 +654,13 @@
   <!-- Header del chat -->
   <div class="chat-header">
     <div style="display:flex; align-items:center; flex:1;">
-      <span class="status-dot"></span>
       <span class="header-title">
         {#if currentCategory && currentSubcategory}
-          {currentCategory} › {currentSubcategory}
+          {currentCategory} > {currentSubcategory}
+        {:else if currentSubcategory}
+          {currentSubcategory}
+        {:else if currentCategory}
+          {currentCategory}
         {:else}
           Asistente Virtual
         {/if}
@@ -606,7 +673,35 @@
     {#each messages as m, idx}
       <div class="msg {m.who}">
         <div class="bubble">
-          <div class="message-text">{m.text}</div>
+          {#if m.who === "bot" && m.meta?.needs_related_request_selection && m.meta?.related_requests && m.meta.related_requests.length > 0}
+            <!-- Formato mejorado para solicitudes relacionadas -->
+            <div class="related-requests-container">
+              <div class="related-requests-intro">{m.text.split('\n')[0]}</div>
+              <div class="related-requests-list">
+                {#each m.meta.related_requests as req, index}
+                  {@const fecha = req.fecha_formateada || ''}
+                  {@const descripcion = (req.descripcion || '').trim()}
+                  {@const codigo = req.codigo || req.codigo_generado || `Solicitud ${req.id}`}
+                  <div class="related-request-item">
+                    <div class="related-request-header">
+                      <span class="related-request-title">{index + 1}. {codigo}</span>
+                      {#if fecha}
+                        <span class="related-request-date">{fecha}</span>
+                      {/if}
+                    </div>
+                    {#if descripcion}
+                      <div class="related-request-description">{descripcion}</div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+              <div class="related-requests-footer">
+                ¿Deseas relacionar tu solicitud actual con alguna de estas? Si ninguna es relevante, puedes continuar sin relacionar.
+              </div>
+            </div>
+          {:else}
+            <div class="message-text">{m.text}</div>
+          {/if}
           
           {#if m.who === "bot" && m.meta?.fuentes && m.meta.fuentes.length > 0}
             <div class="pdf-sources">
@@ -698,7 +793,7 @@
         </div>
     {:else if needsRelatedRequestSelection}
       <!-- Mostrar select de selección de solicitudes relacionadas -->
-      <div class="input-row">
+      <div class="related-request-selection-container">
         <select 
           bind:value={selectedRelatedRequestId}
           disabled={sending}
@@ -706,14 +801,12 @@
           <option value="none">No hay solicitud relacionada</option>
           {#each relatedRequests as req, index}
             <option value={req.id}>
-              {index + 1}. {req.display || req.id}
+              {req.codigo || req.codigo_generado || req.id}
             </option>
           {/each}
         </select>
-      </div>
-      <div class="related-request-submit">
         <button 
-          class="send-btn" 
+          class="related-request-submit-btn" 
           on:click={() => {
             if (selectedRelatedRequestId === "none") {
               selectRelatedRequest(null);
@@ -726,42 +819,48 @@
             }
           }}
           disabled={sending}>
-          {sending ? "..." : "Continuar"}
+          Continuar
         </button>
       </div>
     {:else}
         <div class="input-row">
           <textarea rows="2" bind:value={input}
-            placeholder="Escribe tu solicitud…"
+            placeholder="Escribe tu mensaje..."
             on:keydown={handleKey}
             disabled={sending}></textarea>
-          <button class="send-btn" on:click={send} disabled={sending || (needsHandoffFile && !selectedFile)}>
-            {sending ? "..." : "Enviar"}
-          </button>
-        </div>
-        {#if needsHandoffFile}
-          <div class="file-upload-section">
-            <label for="handoff-file-input" class="file-label">
-              {#if selectedFile}
-                ✓ {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)}MB)
-              {:else}
-                📎 Subir PDF o imagen (máx. 4MB)
-              {/if}
-            </label>
-            <input
-              id="handoff-file-input"
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-              bind:this={fileInputRef}
-              on:change={handleFileSelect}
-              disabled={sending}
-              class="file-input"
-            />
-            {#if selectedFile}
-              <button class="remove-file-btn" on:click={() => { selectedFile = null; if (fileInputRef) fileInputRef.value = ""; }}>
-                ✕
-              </button>
+          <div class="input-actions">
+            {#if needsHandoffFile}
+              <label for="handoff-file-input" class="file-upload-btn" title="Subir archivo">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+              </label>
+              <input
+                id="handoff-file-input"
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                bind:this={fileInputRef}
+                on:change={handleFileSelect}
+                disabled={sending}
+                class="file-input"
+              />
             {/if}
+            <button class="send-btn-icon" on:click={send} disabled={sending || (needsHandoffFile && !selectedFile)} title="Enviar">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
+        </div>
+        {#if needsHandoffFile && selectedFile}
+          <div class="file-selected-info">
+            <span>✓ {selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)}MB)</span>
+            <button class="remove-file-btn-small" on:click={() => { selectedFile = null; if (fileInputRef) fileInputRef.value = ""; }}>
+              ✕
+            </button>
           </div>
         {/if}
       {/if}
@@ -783,8 +882,8 @@
   --navy-900:#0f2a57;
   --blue-100:#e6f0ff;
   --blue-500:#1b66d1;
-  --orange-500:#ff8b2a;
-  --orange-600:#e97400;
+  --orange-500:#1b66d1;
+  --orange-600:#0f4a8f;
   --gray-050:#f6f7fb;
   --gray-200:#e4e7ee;
   --gray-500:#6d7382;
@@ -804,20 +903,16 @@
 /* Header */
 .chat-header{
   display:flex; align-items:center; justify-content:space-between;
-  background:var(--navy-900); color:#fff;
-  padding:12px 16px; font-weight:700; letter-spacing:.2px;
+  background:#0f2a57; color:#fff;
+  padding:14px 20px; font-weight:700; letter-spacing:.2px;
+  border-radius:22px 22px 0 0;
 }
-.status-dot{
-  width:10px; height:10px; border-radius:50%;
-  background:#47d16a; margin-right:10px;
-  box-shadow:0 0 0 3px rgba(71,209,106,.25);
-}
-.header-title{font-size:1rem}
+.header-title{font-size:1.1rem; color:#fff}
 
 /* Body */
 .chat-body{
   background:
-    radial-gradient(1200px 200px at 50% -80px, rgba(255,139,42,.08), transparent 60%),
+    radial-gradient(1200px 200px at 50% -80px, rgba(27,102,209,.08), transparent 60%),
     linear-gradient(180deg,#ffffff,#f6f9ff);
   flex:1; overflow:auto; padding:16px;
 }
@@ -838,26 +933,36 @@
   white-space:pre-line;
 }
 
-/* Usuario = azul claro */
+/* Usuario = azul oscuro */
 .msg.user{justify-content:flex-end}
 .msg.user .bubble{
-  background:var(--blue-100);
-  border-color:#cfe0ff;
+  background:#1b66d1;
+  color:#fff;
+  border-color:#1b66d1;
+}
+.msg.user .message-text{
+  color:#fff;
 }
 
-/* Bot = naranja */
+/* Bot = blanco/gris claro */
 .msg.bot .bubble{
-  background:linear-gradient(180deg, rgba(255,139,42,.12), rgba(255,139,42,.08));
-  border-color:rgba(233,148,63,.45);
+  background:#fff;
+  border-color:#e4e7ee;
+  color:#0f2136;
 }
 
 /* Select de solicitudes relacionadas */
+.related-request-selection-container{
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .related-request-select{
   width: 100%;
   padding: 12px 14px;
   border: 1px solid var(--gray-200);
   border-radius: 10px;
-  font-size: 14px;
+  font-size: 0.95rem;
   font-weight: 500;
   background: #fff;
   color: #0f2136;
@@ -870,47 +975,149 @@
   padding-right: 40px;
 }
 .related-request-select:hover{
-  border-color: var(--orange-500);
-  background-color: #f3f5f9;
+  border-color: #1b66d1;
+  background-color: #f6f7fb;
 }
 .related-request-select:focus{
   outline: none;
-  border-color: var(--orange-500);
-  box-shadow: 0 0 0 3px rgba(255, 139, 42, 0.1);
+  border-color: #1b66d1;
+  box-shadow: 0 0 0 2px rgba(27,102,209,.1);
 }
 .related-request-select:disabled{
   opacity: 0.5;
   cursor: not-allowed;
-  background-color: #f3f5f9;
+  background-color: #f6f7fb;
 }
-.related-request-submit{
-  margin-top: 12px;
-  display: flex;
-  justify-content: flex-end;
+.related-request-submit-btn{
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  background: #1b66d1;
+  color: #fff;
+  border: 0;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.related-request-submit-btn:hover:not(:disabled){
+  background: #0f4a8f;
+}
+.related-request-submit-btn:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Input inferior */
-.chat-input{background:#fbfcff; border-top:1px solid var(--gray-200); padding:12px}
-.input-row{display:flex; align-items:flex-start; gap:10px}
+.chat-input{background:#fbfcff; border-top:1px solid var(--gray-200); padding:16px; border-radius:0 0 22px 22px}
+.input-row{
+  display:flex; 
+  align-items:flex-end; 
+  gap:8px; 
+  margin-bottom:0;
+}
 .chat-input textarea{
-  flex:1; min-height:44px; max-height:120px; resize:vertical;
-  padding:12px 14px; border-radius:12px; border:1px solid var(--gray-200);
-  background:#fff; font:inherit; color:#0f2136; outline:none;
+  flex:1; 
+  min-height:44px; 
+  max-height:120px; 
+  resize:none;
+  padding:12px 14px; 
+  border-radius:10px; 
+  border:1px solid var(--gray-200);
+  background:#fff; 
+  font:inherit; 
+  color:#0f2136; 
+  outline:none;
+  font-size:0.95rem;
+  line-height:1.5;
 }
-.chat-input textarea:focus{border-color:var(--orange-500);
-  box-shadow:0 0 0 3px rgba(255,139,42,.18)}
-.send-btn{
-  background:var(--orange-500); color:#fff; border:0; border-radius:12px;
-  padding:12px 18px; font-weight:700; cursor:pointer;
+.chat-input textarea:focus{
+  border-color:#1b66d1;
+  box-shadow:0 0 0 2px rgba(27,102,209,.1);
 }
-.send-btn:hover:not(:disabled){background:var(--orange-600)}
-.send-btn:disabled{opacity:.7; cursor:not-allowed}
+.chat-input textarea::placeholder{
+  color:#6d7382;
+}
+
+.input-actions{
+  display:flex; 
+  align-items:flex-end; 
+  gap:6px;
+  height:44px;
+}
+
+.file-upload-btn{
+  display:flex; 
+  align-items:center; 
+  justify-content:center;
+  width:44px; 
+  height:44px;
+  border-radius:10px;
+  border:1px solid var(--gray-200);
+  background:#fff;
+  color:#6d7382;
+  cursor:pointer;
+  transition:all 0.2s;
+  padding:0;
+  flex-shrink:0;
+}
+.file-upload-btn:hover{
+  background:#f6f7fb;
+  border-color:#1b66d1;
+  color:#1b66d1;
+}
+
+.send-btn-icon{
+  display:flex; 
+  align-items:center; 
+  justify-content:center;
+  width:44px; 
+  height:44px;
+  border-radius:10px;
+  background:#1b66d1;
+  color:#fff;
+  border:0;
+  cursor:pointer;
+  transition:all 0.2s;
+  padding:0;
+  flex-shrink:0;
+}
+.send-btn-icon:hover:not(:disabled){
+  background:#0f4a8f;
+}
+.send-btn-icon:disabled{
+  opacity:.5; 
+  cursor:not-allowed;
+}
+
+.file-selected-info{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:8px 12px;
+  background:#e6f0ff;
+  border:1px solid #cfe0ff;
+  border-radius:8px;
+  margin-bottom:12px;
+  font-size:0.9rem;
+  color:#0f2136;
+}
+.remove-file-btn-small{
+  background:transparent;
+  border:0;
+  color:#991b1b;
+  cursor:pointer;
+  font-size:1rem;
+  padding:0 4px;
+  font-weight:700;
+}
+.remove-file-btn-small:hover{
+  color:#dc2626;
+}
 
 /* Confirmación sí/no */
 .confirmation-buttons{display:flex; gap:8px; margin-top:8px}
 .confirm-btn{flex:1; padding:12px 14px; border-radius:10px; font-weight:700; cursor:pointer; border:0}
-.confirm-btn.yes{background:var(--orange-500); color:#fff}
-.confirm-btn.yes:hover{background:var(--orange-600)}
+.confirm-btn.yes{background:#1b66d1; color:#fff}
+.confirm-btn.yes:hover{background:#0f4a8f}
 .confirm-btn.no{background:var(--gray-050); color:#0f2136; border:1px solid var(--gray-200)}
 .confirm-btn.no:hover{background:#eef2f7}
 
@@ -971,7 +1178,7 @@
 }
 .pdf-link{
   display:inline-flex; align-items:center; font-size:.82rem; font-weight:700;
-  color:var(--orange-600); text-decoration:none; padding:4px 8px; border-radius:8px;
+  color:#1b66d1; text-decoration:none; padding:4px 8px; border-radius:8px;
 }
 .pdf-link:hover{background:var(--blue-100); text-decoration:underline}
 .pdf-pages{
@@ -980,7 +1187,68 @@
 
 /* Enlaces de archivo renderizados dentro del mensaje del usuario */
 .inline-file-link{color:#0f2136; font-weight:700; text-decoration:underline}
-.inline-file-link:hover{color:var(--orange-600)}
+.inline-file-link:hover{color:#1b66d1}
+
+/* Solicitudes relacionadas - Formato mejorado */
+.related-requests-container{
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.related-requests-intro{
+  font-size: 0.95rem;
+  color: #0f2136;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.related-requests-list{
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.related-request-item{
+  background: #f8f9fa;
+  border: 1px solid #e4e7ee;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.related-request-header{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.related-request-title{
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #0f2136;
+  flex: 1;
+  min-width: 200px;
+}
+.related-request-date{
+  font-size: 0.85rem;
+  color: #6d7382;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.related-request-description{
+  font-size: 0.9rem;
+  color: #4a5568;
+  line-height: 1.5;
+  margin-top: 6px;
+  padding-left: 4px;
+  word-wrap: break-word;
+}
+.related-requests-footer{
+  font-size: 0.9rem;
+  color: #6d7382;
+  font-style: italic;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid #e4e7ee;
+}
 
 /* Sección de subida de archivo */
 .file-upload-section{
@@ -1004,7 +1272,7 @@
   display: none;
 }
 .file-label:hover{
-  color: var(--orange-600);
+  color: #1b66d1;
 }
 .remove-file-btn{
   background: #fee2e2;

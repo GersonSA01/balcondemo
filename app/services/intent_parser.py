@@ -11,6 +11,7 @@ Eres un extractor de intención. Devuelve SOLO un JSON válido con esta estructu
 
 {
   "intent_short": "<12-16 palabras, concreta y accionable>",
+  "intent_code": "<uno de: consultar_solicitudes_balcon | consultar_datos_personales | consultar_carrera_actual | consultar_roles_usuario | otro>",
   "accion": "<verbo principal en infinitivo: consultar, rectificar, recalificar, cambiar, inscribir, homologar, etc.>",
   "objeto": "<qué cosa sobre la que recae la acción: nota, actividad, paralelo, carrera, matrícula, práctica, etc.>",
   "asignatura": "<si aplica, nombre o siglas>",
@@ -21,15 +22,24 @@ Eres un extractor de intención. Devuelve SOLO un JSON válido con esta estructu
   "modalidad": "<si aplica: en línea, presencial, híbrida>",
   "sistema": "<si aplica: SGA, plataforma, aula virtual, etc.>",
   "problema": "<si describe un fallo: no veo, no carga, error, bloqueado, etc.>",
-  "detalle_libre": "<1 oración con detalles útiles literal/parafraseado con fidelidad>"
+  "detalle_libre": "<1 oración con detalles útiles literal/parafraseado con fidelidad>",
+  "original_user_message": "<mensaje original del usuario tal cual>"
 }
 
-Reglas:
+Reglas para intent_code:
+- "consultar_solicitudes_balcon": Si pregunta sobre sus solicitudes en el balcón (ej: "qué solicitudes tengo", "mis solicitudes", "estado de mis solicitudes")
+- "consultar_carrera_actual": Si pregunta sobre su carrera actual (ej: "en qué carrera estoy", "qué carrera estudio", "mi carrera")
+- "consultar_roles_usuario": Si pregunta sobre sus roles/perfiles (ej: "qué perfiles tengo", "soy estudiante o profesor")
+- "consultar_datos_personales": Si pregunta sobre datos personales básicos (ej: "cuál es mi nombre", "mi email")
+- "otro": Para cualquier otra consulta que no entre en las categorías anteriores
+
+Reglas generales:
 - No inventes: si un campo no está, pon "" (string vacío).
 - intent_short debe ser una síntesis concreta (sin nombres propios sensibles).
 - Usa el texto del usuario tal cual cuando aporte precisión (p. ej., "Parcial 1").
 - Mantén tildes y mayúsculas de nombres de asignaturas si las dijo el usuario.
 - NUNCA incluyas texto fuera del JSON.
+- original_user_message debe ser el mensaje exacto del usuario.
 """
 
 
@@ -42,7 +52,11 @@ def interpretar_intencion_principal(texto_usuario: str) -> dict:
     blob = m.group(0) if m else raw
     try:
         data = json.loads(blob)
-    except Exception:
+    except Exception as e:
+        # Loggear el error antes del fallback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Error parseando respuesta del LLM como JSON: {e}. Usando fallback.")
         data = {
             "intent_short": texto_usuario.strip()[:80],
             "accion": "",
@@ -58,13 +72,22 @@ def interpretar_intencion_principal(texto_usuario: str) -> dict:
             "detalle_libre": texto_usuario.strip()[:160]
         }
     keys = [
-        "intent_short", "accion", "objeto", "asignatura", "unidad_o_actividad",
-        "periodo", "carrera", "facultad", "modalidad", "sistema", "problema", "detalle_libre"
+        "intent_short", "intent_code", "accion", "objeto", "asignatura", "unidad_o_actividad",
+        "periodo", "carrera", "facultad", "modalidad", "sistema", "problema", "detalle_libre", "original_user_message"
     ]
     for k in keys:
         data.setdefault(k, "")
         if not isinstance(data[k], str):
             data[k] = str(data[k] or "")
+    
+    # Asegurar que original_user_message siempre tenga el texto original
+    if not data.get("original_user_message"):
+        data["original_user_message"] = texto_usuario.strip()
+    
+    # Si intent_code no está o es inválido, intentar inferirlo
+    if not data.get("intent_code") or data["intent_code"] == "":
+        data["intent_code"] = "otro"
+    
     return data
 
 

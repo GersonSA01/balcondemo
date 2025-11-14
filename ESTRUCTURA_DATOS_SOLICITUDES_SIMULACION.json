@@ -1,0 +1,457 @@
+{
+  "descripcion": "Estructura completa de datos para simular el sistema de seguimiento de solicitudes del balcón de servicios en BalconDemo",
+  "version": "1.0",
+  "fecha_creacion": "2024-12-21",
+  "estructura_solicitud": {
+    "tabla": "solicitud_balcon",
+    "campos": {
+      "id": {
+        "tipo": "integer",
+        "descripcion": "ID único de la solicitud",
+        "ejemplo": 1
+      },
+      "codigo": {
+        "tipo": "string",
+        "descripcion": "Código único de la solicitud",
+        "formato": "SOL-{SIGLA}-{AÑO}{MES}-{NUMERO}",
+        "ejemplo": "SOL-CAM-202412-000001"
+      },
+      "solicitante_id": {
+        "tipo": "integer",
+        "descripcion": "ID de la persona que realiza la solicitud",
+        "ejemplo": 789
+      },
+      "agente_id": {
+        "tipo": "integer",
+        "nullable": true,
+        "descripcion": "ID del agente asignado para atender la solicitud",
+        "ejemplo": 456
+      },
+      "estado": {
+        "tipo": "integer",
+        "descripcion": "Estado actual de la solicitud",
+        "valores": {
+          "1": "INGRESADO",
+          "2": "RECHAZADO",
+          "3": "EN TRÁMITE",
+          "4": "APROBADO",
+          "5": "ATENDIDO",
+          "6": "CORRECCIÓN",
+          "7": "CERRADA",
+          "8": "LEIDO"
+        },
+        "default": 1
+      },
+      "tipo": {
+        "tipo": "integer",
+        "descripcion": "Tipo de solicitud",
+        "valores": {
+          "1": "INFORMACIÓN",
+          "2": "SOLICITUD"
+        },
+        "default": 2
+      },
+      "archivo": {
+        "tipo": "string",
+        "nullable": true,
+        "descripcion": "Ruta del archivo adjunto",
+        "ejemplo": "solicitudbalcon/solicitud_20241221104413.pdf"
+      },
+      "descripcion": {
+        "tipo": "text",
+        "descripcion": "Descripción de la solicitud",
+        "ejemplo": "SOLICITO CAMBIO DE PARALELO DE LA MATERIA MATEMÁTICAS"
+      },
+      "numero": {
+        "tipo": "integer",
+        "descripcion": "Número secuencial de solicitud del estudiante",
+        "ejemplo": 1
+      },
+      "fecha_creacion": {
+        "tipo": "datetime",
+        "descripcion": "Fecha y hora de creación",
+        "formato": "ISO 8601",
+        "ejemplo": "2024-12-21T10:44:13Z"
+      },
+      "fecha_modificacion": {
+        "tipo": "datetime",
+        "descripcion": "Fecha y hora de última modificación",
+        "formato": "ISO 8601",
+        "ejemplo": "2024-12-21T10:44:13Z"
+      },
+      "fecha_expiracion_solicitud": {
+        "tipo": "datetime",
+        "nullable": true,
+        "descripcion": "Fecha de expiración para correcciones (estado 6)",
+        "formato": "ISO 8601",
+        "ejemplo": "2024-12-24T10:44:13Z"
+      },
+      "servicio": {
+        "tipo": "object",
+        "descripcion": "Información del servicio/proceso",
+        "campos": {
+          "id": {
+            "tipo": "integer",
+            "ejemplo": 50
+          },
+          "nombre": {
+            "tipo": "string",
+            "ejemplo": "Cambio de paralelo"
+          },
+          "proceso": {
+            "tipo": "object",
+            "campos": {
+              "id": {
+                "tipo": "integer",
+                "ejemplo": 10
+              },
+              "sigla": {
+                "tipo": "string",
+                "ejemplo": "CAM"
+              },
+              "descripcion": {
+                "tipo": "string",
+                "ejemplo": "CAMBIO DE PARALELO"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "estructura_historial": {
+    "tabla": "historial_solicitud_balcon",
+    "campos": {
+      "id": {
+        "tipo": "integer",
+        "descripcion": "ID único del historial",
+        "ejemplo": 1
+      },
+      "solicitud_id": {
+        "tipo": "integer",
+        "descripcion": "ID de la solicitud relacionada",
+        "ejemplo": 1
+      },
+      "estado": {
+        "tipo": "integer",
+        "descripcion": "Estado del historial",
+        "valores": {
+          "1": "INGRESADO",
+          "2": "EN TRÁMITE",
+          "3": "CORRECCIÓN",
+          "4": "ATENDIDO",
+          "5": "APROBADO",
+          "6": "RECHAZADO",
+          "7": "CERRADA",
+          "8": "LEIDO"
+        },
+        "default": 1
+      },
+      "observacion": {
+        "tipo": "text",
+        "descripcion": "Observación o comentario del agente",
+        "ejemplo": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta."
+      },
+      "asignadorecibe_id": {
+        "tipo": "integer",
+        "nullable": true,
+        "descripcion": "ID de la persona que recibe la solicitud",
+        "ejemplo": 456
+      },
+      "asignadorecibe": {
+        "tipo": "string",
+        "nullable": true,
+        "descripcion": "Nombre completo de la persona que recibe",
+        "ejemplo": "Juan Pérez González"
+      },
+      "departamento": {
+        "tipo": "string",
+        "nullable": true,
+        "descripcion": "Nombre del departamento",
+        "ejemplo": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
+      },
+      "carrera_id": {
+        "tipo": "integer",
+        "nullable": true,
+        "descripcion": "ID de la carrera del estudiante",
+        "ejemplo": 10
+      },
+      "archivo": {
+        "tipo": "string",
+        "nullable": true,
+        "descripcion": "Ruta del archivo adjunto en el historial",
+        "ejemplo": "solicitudbalconhistorial/archivo_20241221104413.pdf"
+      },
+      "fecha_creacion": {
+        "tipo": "datetime",
+        "descripcion": "Fecha y hora de creación del historial",
+        "formato": "ISO 8601",
+        "ejemplo": "2024-12-21T10:44:13Z"
+      },
+      "servicio": {
+        "tipo": "string",
+        "nullable": true,
+        "descripcion": "Nombre del servicio",
+        "ejemplo": "Cambio de paralelo"
+      }
+    }
+  },
+  "estructura_requisitos": {
+    "tabla": "requisitos_solicitud_balcon",
+    "campos": {
+      "id": {
+        "tipo": "integer",
+        "descripcion": "ID único del requisito",
+        "ejemplo": 1
+      },
+      "solicitud_id": {
+        "tipo": "integer",
+        "descripcion": "ID de la solicitud relacionada",
+        "ejemplo": 1
+      },
+      "requisito_id": {
+        "tipo": "integer",
+        "descripcion": "ID del requisito configurado",
+        "ejemplo": 20
+      },
+      "archivo": {
+        "tipo": "string",
+        "descripcion": "Ruta del archivo del requisito",
+        "ejemplo": "solicitudbalconrequisitos/kardex_academico_20241221104413.pdf"
+      },
+      "fecha_creacion": {
+        "tipo": "datetime",
+        "descripcion": "Fecha y hora de creación",
+        "formato": "ISO 8601",
+        "ejemplo": "2024-12-21T10:44:13Z"
+      }
+    }
+  },
+  "ejemplo_completo_solicitud": {
+    "solicitud": {
+      "id": 1,
+      "codigo": "SOL-CAM-202412-000001",
+      "solicitante_id": 789,
+      "agente_id": 456,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20241221104413.pdf",
+      "descripcion": "SOLICITO CAMBIO DE PARALELO DE LA MATERIA MATEMÁTICAS DEL PARALELO A AL PARALELO B",
+      "numero": 1,
+      "fecha_creacion": "2024-12-21T10:44:13Z",
+      "fecha_modificacion": "2024-12-21T10:44:13Z",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 50,
+        "nombre": "Cambio de paralelo",
+        "proceso": {
+          "id": 10,
+          "sigla": "CAM",
+          "descripcion": "CAMBIO DE PARALELO"
+        }
+      }
+    },
+    "historiales": [
+      {
+        "id": 1,
+        "solicitud_id": 1,
+        "estado": 1,
+        "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+        "asignadorecibe_id": 456,
+        "asignadorecibe": "Juan Pérez González",
+        "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+        "carrera_id": 10,
+        "archivo": null,
+        "fecha_creacion": "2024-12-21T10:44:13Z",
+        "servicio": "Cambio de paralelo"
+      }
+    ],
+    "requisitos": [
+      {
+        "id": 1,
+        "solicitud_id": 1,
+        "requisito_id": 20,
+        "archivo": "solicitudbalconrequisitos/kardex_academico_20241221104413.pdf",
+        "fecha_creacion": "2024-12-21T10:44:13Z"
+      }
+    ]
+  },
+  "flujo_estados": {
+    "descripcion": "Flujo típico de estados de una solicitud",
+    "estados": [
+      {
+        "orden": 1,
+        "estado": 1,
+        "nombre": "INGRESADO",
+        "descripcion": "Solicitud creada y recibida en el sistema",
+        "siguiente_estado": [2, 3, 6],
+        "accion_requerida": "Revisión inicial por agente"
+      },
+      {
+        "orden": 2,
+        "estado": 3,
+        "nombre": "EN TRÁMITE",
+        "descripcion": "Solicitud en proceso de revisión",
+        "siguiente_estado": [4, 5, 6, 2],
+        "accion_requerida": "Procesamiento por agente"
+      },
+      {
+        "orden": 3,
+        "estado": 6,
+        "nombre": "CORRECCIÓN",
+        "descripcion": "Solicitud requiere corrección del estudiante",
+        "siguiente_estado": [3, 7],
+        "accion_requerida": "Estudiante debe corregir en 3 días",
+        "fecha_expiracion": true
+      },
+      {
+        "orden": 4,
+        "estado": 4,
+        "nombre": "APROBADO",
+        "descripcion": "Solicitud aprobada",
+        "siguiente_estado": [5, 7],
+        "accion_requerida": "Finalización del proceso"
+      },
+      {
+        "orden": 5,
+        "estado": 5,
+        "nombre": "ATENDIDO",
+        "descripcion": "Solicitud completamente atendida",
+        "siguiente_estado": [7],
+        "accion_requerida": "Cierre de solicitud"
+      },
+      {
+        "orden": 6,
+        "estado": 2,
+        "nombre": "RECHAZADO",
+        "descripcion": "Solicitud rechazada",
+        "siguiente_estado": [],
+        "accion_requerida": "Fin del proceso"
+      },
+      {
+        "orden": 7,
+        "estado": 7,
+        "nombre": "CERRADA",
+        "descripcion": "Solicitud cerrada",
+        "siguiente_estado": [],
+        "accion_requerida": "Fin del proceso"
+      }
+    ]
+  },
+  "endpoints_api": {
+    "crear_solicitud": {
+      "metodo": "POST",
+      "url": "/api/balcon_servicios/",
+      "body": {
+        "action": "addRequestService",
+        "service_id": "ID_ENCRIPTADO",
+        "tipo": "2",
+        "descripcion": "Texto de la solicitud",
+        "solicitud": "0",
+        "file_uprequest": "File (PDF/JPG/JPEG/PNG, max 4MB)",
+        "file_requirement_{ID}": "File (PDF, max 4MB, opcional)"
+      },
+      "response": {
+        "isSuccess": true,
+        "data": {
+          "urlservice": null,
+          "solicitud_id": "ID_ENCRIPTADO"
+        }
+      }
+    },
+    "consultar_solicitudes": {
+      "metodo": "GET",
+      "url": "/api/balcon_servicios/?action=getMyRequests",
+      "response": {
+        "isSuccess": true,
+        "data": {
+          "eBalconyRequests": [
+            {
+              "id": "ID_ENCRIPTADO",
+              "numero": 1,
+              "numero_display": "00001",
+              "codigo": "SOL-CAM-202412-000001",
+              "descripcion": "SOLICITO CAMBIO DE PARALELO",
+              "estado": 1,
+              "estado_display": "INGRESADO",
+              "fecha_creacion": "2024-12-21T10:44:13Z",
+              "fecha_creacion_v2": "21/12/2024",
+              "hora_creacion_v2": "10:44",
+              "nombre_servicio": "Cambio de paralelo",
+              "nombre_servicio_minus": "Cambio de paralelo",
+              "archivo": "/media/solicitudbalcon/solicitud_20241221104413.pdf",
+              "typefile": ".pdf"
+            }
+          ],
+          "cantSolicitudesSinResponderEncuesta": 0,
+          "mensajeResponderEncuesta": ""
+        }
+      }
+    },
+    "ver_historial": {
+      "metodo": "GET",
+      "url": "/api/balcon_servicios/?action=getViewHistoricalRequestService&id=ID_ENCRIPTADO",
+      "response": {
+        "isSuccess": true,
+        "data": {
+          "eBalconyRequest": {
+            "id": "ID_ENCRIPTADO",
+            "codigo": "SOL-CAM-202412-000001",
+            "descripcion": "SOLICITO CAMBIO DE PARALELO",
+            "estado": 1,
+            "estado_display": "INGRESADO",
+            "solicitante": "Juan Pérez González",
+            "agente": "María García López"
+          },
+          "eBalconyRequestHistories": [
+            {
+              "id": 1,
+              "estado": 1,
+              "estado_display": "INGRESADO",
+              "observacion": "Solicitud recibida en el sistema",
+              "asignadorecibe": "María García López",
+              "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+              "fecha_creacion": "2024-12-21T10:44:13Z",
+              "fecha_creacion_v2": "21/12/2024",
+              "hora_creacion_v2": "10:44",
+              "archivo": null,
+              "color": "#FF9900"
+            }
+          ]
+        }
+      }
+    },
+    "corregir_solicitud": {
+      "metodo": "POST",
+      "url": "/api/balcon_servicios/",
+      "body": {
+        "action": "correctRequestService",
+        "id": "ID_ENCRIPTADO",
+        "descripcion": "Correcciones realizadas: ...",
+        "file_uprequest": "File (PDF/JPG/JPEG/PNG, max 4MB)"
+      },
+      "response": {
+        "isSuccess": true,
+        "data": {}
+      }
+    }
+  },
+  "notas_implementacion": {
+    "almacenamiento": "En BalconDemo se puede usar JSON para almacenar solicitudes temporalmente",
+    "archivos": "Guardar archivos en media/solicitudbalcon/",
+    "codigo_solicitud": "Generar código único: SOL-{SIGLA}-{AÑO}{MES}-{NUMERO}",
+    "encriptacion": "Los IDs se envían encriptados usando encrypt()",
+    "validaciones": {
+      "archivo_tamaño_max": "4 MB",
+      "archivo_extensiones": ["pdf", "jpg", "jpeg", "png"],
+      "requisitos_obligatorios": "Deben tener archivo adjunto"
+    },
+    "asignacion_agente": {
+      "prioridad_1": "Director de carrera (si existe)",
+      "prioridad_2": "Agente administrativo con menos solicitudes pendientes",
+      "default": "Agente por defecto"
+    }
+  }
+}
+
+

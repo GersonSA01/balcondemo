@@ -1,10 +1,11 @@
 from django.urls import path
-from .views import balcon_view, chat_api, taxonomia_api, estudiante_api, serve_pdf
+from .views import balcon_view, chat_api, taxonomia_api, estudiante_api, usuarios_api, serve_pdf
 
 urlpatterns = [
     path('', balcon_view, name='balcon'),
     path('api/chat/', chat_api, name='chat_api'),
     path('api/taxonomia/', taxonomia_api, name='taxonomia_api'),
+    path('api/usuarios/', usuarios_api, name='usuarios_api'),
     path('api/estudiante/', estudiante_api, name='estudiante_api'),
     path('api/pdf/<path:pdf_path>', serve_pdf, name='serve_pdf'),  # <path:> permite subdirectorios
 ]

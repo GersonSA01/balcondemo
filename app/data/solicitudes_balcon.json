@@ -1,0 +1,298 @@
+{
+  "solicitudes": [
+    {
+      "id": 1,
+      "codigo": "SOL-GEN-202511-000001",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251113162013.pdf",
+      "descripcion": "ME DUELE UNA MUELA",
+      "numero": 1,
+      "fecha_creacion": "2025-11-13T16:20:13.960271",
+      "fecha_modificacion": "2025-11-13T16:20:13.960271",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "codigo": "SOL-GEN-202511-000002",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251113162245.pdf",
+      "descripcion": "ENCESITO SERVICIO MEDICO PQ ME DUELE EL ESTOMAGO",
+      "numero": 2,
+      "fecha_creacion": "2025-11-13T16:22:45.470393",
+      "fecha_modificacion": "2025-11-13T16:22:45.470393",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "codigo": "SOL-SERODO-202511-000003",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251113162715.pdf",
+      "descripcion": "ME DUELE EL DIENTEE",
+      "numero": 3,
+      "fecha_creacion": "2025-11-13T16:27:15.230703",
+      "fecha_modificacion": "2025-11-13T16:27:15.230703",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Servicio odontológico",
+        "proceso": {
+          "id": 0,
+          "sigla": "SERODO",
+          "descripcion": "SERVICIO ODONTOLÓGICO"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "codigo": "SOL-SERODO-202511-000004",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251113163051.pdf",
+      "descripcion": "QUIERO SACAR CITA MEDICA PQ ME DUELE EL DIENTE",
+      "numero": 4,
+      "fecha_creacion": "2025-11-13T16:30:51.312697",
+      "fecha_modificacion": "2025-11-13T16:30:51.312697",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Servicio odontológico",
+        "proceso": {
+          "id": 0,
+          "sigla": "SERODO",
+          "descripcion": "SERVICIO ODONTOLÓGICO"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "codigo": "SOL-SERODO-202511-000005",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251113163335.pdf",
+      "descripcion": "QUIERO SACAR CITA MEDICA PQ ME DUELE EL DIENTE",
+      "numero": 5,
+      "fecha_creacion": "2025-11-13T16:33:35.929618",
+      "fecha_modificacion": "2025-11-13T16:33:35.929618",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Servicio odontológico",
+        "proceso": {
+          "id": 0,
+          "sigla": "SERODO",
+          "descripcion": "SERVICIO ODONTOLÓGICO"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "codigo": "SOL-CONVAR-202511-000006",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251113205917.pdf",
+      "descripcion": "GFDGF",
+      "numero": 6,
+      "fecha_creacion": "2025-11-13T20:59:17.223333",
+      "fecha_modificacion": "2025-11-13T20:59:17.223333",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Consultas varias",
+        "proceso": {
+          "id": 0,
+          "sigla": "CONVAR",
+          "descripcion": "CONSULTAS VARIAS"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "codigo": "SOL-GEN-202511-000007",
+      "solicitante_id": 174984,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251114080219.pdf",
+      "descripcion": "NECESITO SABER LAS NOTAS DE MI HIJO Y SABER COMO VA EN ASISTENCIAS",
+      "numero": 1,
+      "fecha_creacion": "2025-11-14T08:02:19.366636",
+      "fecha_modificacion": "2025-11-14T08:02:19.366636",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "codigo": "SOL-GEN-202511-000008",
+      "solicitante_id": 174984,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251114084315.pdf",
+      "descripcion": "GFBGFH",
+      "numero": 2,
+      "fecha_creacion": "2025-11-14T08:43:15.705354",
+      "fecha_modificacion": "2025-11-14T08:43:15.705354",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    }
+  ],
+  "historiales": [
+    {
+      "id": 1,
+      "solicitud_id": 1,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "bienestar",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-13T16:20:13.960271",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 2,
+      "solicitud_id": 2,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "bienestar",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-13T16:22:45.470393",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 3,
+      "solicitud_id": 3,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE BIENESTAR UNIVERSITARIO",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-13T16:27:15.230703",
+      "servicio": "Servicio odontológico"
+    },
+    {
+      "id": 4,
+      "solicitud_id": 4,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE BIENESTAR UNIVERSITARIO",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-13T16:30:51.312697",
+      "servicio": "Servicio odontológico"
+    },
+    {
+      "id": 5,
+      "solicitud_id": 5,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE BIENESTAR UNIVERSITARIO",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-13T16:33:35.929618",
+      "servicio": "Servicio odontológico"
+    },
+    {
+      "id": 6,
+      "solicitud_id": 6,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE TECNOLOGÍA DE LA INFORMACIÓN Y COMUNICACIONES",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-13T20:59:17.223333",
+      "servicio": "Consultas varias"
+    },
+    {
+      "id": 7,
+      "solicitud_id": 7,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "académico",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-14T08:02:19.366636",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 8,
+      "solicitud_id": 8,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "general",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-14T08:43:15.705354",
+      "servicio": "Solicitud General"
+    }
+  ],
+  "requisitos": [],
+  "next_id": 9,
+  "next_historial_id": 9,
+  "next_requisito_id": 1
+}
