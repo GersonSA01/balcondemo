@@ -2,9 +2,16 @@
 """
 Parser para respuestas de PrivateGPT API.
 Maneja múltiples formatos de respuesta y extrae información de manera consistente.
+
+Ahora confía principalmente en PrivateGPT para la decisión de has_information,
+solo aplicando heurísticas suaves como backup cuando no se puede parsear el JSON.
 """
 from typing import Dict, List, Any, Optional
 import json
+import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class PrivateGPTResponseParser:
@@ -50,16 +57,25 @@ class PrivateGPTResponseParser:
         """
         Parsea respuesta de PrivateGPT y normaliza el formato.
         
+        Ahora confía principalmente en PrivateGPT para has_information,
+        solo aplicando validación suave como backup.
+        
         Args:
             response: Respuesta raw de PrivateGPT API
         
         Returns:
-            Dict normalizado con keys: has_information, response, fuentes
+            Dict normalizado con keys:
+            - has_information_pgpt: lo que decidió PrivateGPT
+            - has_information: versión final (solo ligeramente suavizada)
+            - response: texto de respuesta
+            - fuentes: lista de fuentes
         """
         # Formato nuevo: ya viene normalizado
         if "response" in response and "has_information" in response:
+            has_info_pgpt = response.get("has_information", False)
             return {
-                "has_information": response.get("has_information", False),
+                "has_information_pgpt": has_info_pgpt,
+                "has_information": has_info_pgpt,  # Confiar en PrivateGPT
                 "response": response.get("response", ""),
                 "fuentes": response.get("fuentes", [])
             }
@@ -73,10 +89,19 @@ class PrivateGPTResponseParser:
     
     @staticmethod
     def _parse_chat_completions_format(response: Dict[str, Any]) -> Dict[str, Any]:
-        """Parsea formato estándar de chat completions."""
+        """
+        Parsea formato estándar de chat completions.
+        
+        Ahora confía principalmente en PrivateGPT para has_information,
+        solo aplicando validación suave como backup.
+        """
+        logger.debug("Parseando respuesta de PrivateGPT (formato chat completions)")
+        
         choices = response.get("choices", [])
         if not choices:
+            logger.warning("No hay choices en la respuesta de PrivateGPT")
             return {
+                "has_information_pgpt": False,
                 "has_information": False,
                 "response": "No pude procesar tu solicitud.",
                 "fuentes": []
@@ -86,30 +111,61 @@ class PrivateGPTResponseParser:
         message = choice.get("message", {})
         content_raw = message.get("content", "") if isinstance(message, dict) else ""
         
-        # Intentar parsear content como JSON y extraer response y has_information
+        # Intentar parsear content como JSON (PrivateGPT ahora SIEMPRE retorna JSON)
         parsed_content = PrivateGPTResponseParser._extract_response_and_has_info(content_raw)
         response_text = parsed_content.get("response", "")
-        has_information_from_json = parsed_content.get("has_information")
+        has_info_pgpt = parsed_content.get("has_information")
         
         # Extraer fuentes desde todas las ubicaciones posibles
         fuentes = PrivateGPTResponseParser._extract_sources(response, choice, message)
         
-        # Determinar si hay información usando solo heurísticas (sin LLM):
-        # 1. Si viene has_information del JSON, validarlo con heurísticas
-        # 2. Si no viene, usar heurísticas directamente
-        if has_information_from_json is not None:
-            # Validar que si viene true, realmente haya información útil usando solo heurísticas
-            has_information = PrivateGPTResponseParser._validate_has_information(
-                has_information_from_json, response_text, fuentes
+        # Decisión final: confiar en PrivateGPT si viene explícito
+        has_info_final = bool(has_info_pgpt) if has_info_pgpt is not None else None
+        
+        # Solo aplicar validación suave si no tenemos decisión de PrivateGPT
+        if has_info_final is None:
+            # Heurística mínima solo si no viene JSON
+            lowered = response_text.lower()
+            if any(pattern in lowered for pattern in ["no tengo información", "no encontré información"]):
+                has_info_final = False
+            elif len(response_text.strip()) < 40:
+                has_info_final = False
+            else:
+                has_info_final = True
+        else:
+            # Validación suave: si PrivateGPT dice True pero la respuesta es muy corta, corregir
+            if has_info_final and len(response_text.strip()) < 20:
+                logger.warning(
+                    "BalconDemo corrigiendo has_information: PrivateGPT dijo True pero respuesta muy corta",
+                    extra={
+                        "has_info_pgpt": has_info_pgpt,
+                        "response_length": len(response_text.strip())
+                    }
+                )
+                has_info_final = False
+        
+        # Log comparativo
+        if has_info_pgpt is not None and has_info_pgpt != has_info_final:
+            logger.warning(
+                "Diferencia en has_information (PGPT vs Final)",
+                extra={
+                    "has_info_pgpt": has_info_pgpt,
+                    "has_info_final": has_info_final,
+                    "response_preview": response_text[:200]
+                }
             )
         else:
-            # No viene en JSON, usar heurísticas
-            has_information = PrivateGPTResponseParser._determine_has_information(
-                response_text, fuentes
+            logger.info(
+                "BalconDemo has_information pipeline",
+                extra={
+                    "has_info_pgpt": has_info_pgpt,
+                    "has_info_final": has_info_final
+                }
             )
         
         return {
-            "has_information": has_information,
+            "has_information_pgpt": bool(has_info_pgpt) if has_info_pgpt is not None else None,
+            "has_information": has_info_final,
             "response": response_text or "No pude procesar tu solicitud.",
             "fuentes": fuentes
         }
@@ -119,14 +175,21 @@ class PrivateGPTResponseParser:
         """
         Extrae response y has_information desde content (puede ser JSON o texto plano).
         
+        Maneja múltiples formatos:
+        1. JSON válido: {"has_information": false, "response": "..."}
+        2. Texto plano con has_information al inicio: "has_information: false\n..."
+        3. Texto plano sin has_information
+        
         Returns:
             Dict con keys: response (str), has_information (bool|None)
         """
         if not content_raw:
             return {"response": "", "has_information": None}
         
-        # Intentar parsear como JSON
-        if isinstance(content_raw, str) and content_raw.strip().startswith("{"):
+        content_raw = content_raw.strip()
+        
+        # 1. Intentar parsear como JSON completo
+        if content_raw.startswith("{"):
             try:
                 content_parsed = json.loads(content_raw)
                 if isinstance(content_parsed, dict):
@@ -137,6 +200,73 @@ class PrivateGPTResponseParser:
             except (json.JSONDecodeError, ValueError):
                 pass
         
+        # 2. Intentar extraer JSON parcial (buscar { ... } en cualquier parte del texto)
+        json_match = re.search(r'\{[^{}]*"has_information"[^{}]*\}', content_raw)
+        if json_match:
+            try:
+                json_str = json_match.group(0)
+                content_parsed = json.loads(json_str)
+                if isinstance(content_parsed, dict) and "has_information" in content_parsed:
+                    # Extraer el resto del texto como response si no está en el JSON
+                    response_text = content_parsed.get("response", "")
+                    if not response_text:
+                        # Si no hay response en el JSON, usar el texto después del JSON
+                        json_end = json_match.end()
+                        response_text = content_raw[json_end:].strip()
+                    return {
+                        "response": response_text or content_raw,
+                        "has_information": content_parsed.get("has_information")
+                    }
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        # 3. Detectar patrón "has_information: false" o "has_information=false" en texto plano
+        # Patrones: "has_information: false", "has_information=false", "has_information = false"
+        has_info_patterns = [
+            r'has_information\s*:\s*(true|false)',
+            r'has_information\s*=\s*(true|false)',
+            r'"has_information"\s*:\s*(true|false)',
+            r'"has_information"\s*=\s*(true|false)',
+        ]
+        
+        print(f"🔍 [Parser] Buscando patrones has_information en texto (longitud: {len(content_raw)} chars)")
+        print(f"   Primeros 200 chars: {content_raw[:200]}")
+        
+        for pattern in has_info_patterns:
+            match = re.search(pattern, content_raw, re.IGNORECASE)
+            if match:
+                value_str = match.group(1).lower()
+                has_information = value_str in ["true", "1", "yes", "sí", "si"]
+                
+                print(f"✅ [Parser] Detectado patrón '{pattern}': valor='{value_str}' → has_information={has_information}")
+                
+                # Extraer el texto después de has_information como response
+                # Buscar el final de la línea que contiene has_information
+                match_end = match.end()
+                # Buscar el siguiente salto de línea o el final del texto
+                next_newline = content_raw.find('\n', match_end)
+                if next_newline != -1:
+                    response_text = content_raw[next_newline:].strip()
+                else:
+                    # Si no hay salto de línea, buscar desde el final del match
+                    response_text = content_raw[match_end:].strip()
+                    # Limpiar si empieza con ":" o "="
+                    response_text = re.sub(r'^[:=]\s*', '', response_text).strip()
+                
+                # Si el response_text está vacío o es muy corto, usar todo el texto original
+                if not response_text or len(response_text) < 10:
+                    response_text = content_raw
+                
+                print(f"   Response extraído (primeros 200): {response_text[:200]}...")
+                
+                return {
+                    "response": response_text,
+                    "has_information": has_information
+                }
+        
+        print(f"⚠️ [Parser] No se encontró patrón has_information explícito en el texto")
+        
+        # 4. No se encontró has_information explícito
         return {"response": content_raw, "has_information": None}
     
     @staticmethod
@@ -319,6 +449,7 @@ class PrivateGPTResponseParser:
     def _parse_legacy_format(response: Dict[str, Any]) -> Dict[str, Any]:
         """Parsea formato legacy o desconocido."""
         return {
+            "has_information_pgpt": None,
             "has_information": False,
             "response": str(response.get("error", "Formato de respuesta desconocido")),
             "fuentes": []

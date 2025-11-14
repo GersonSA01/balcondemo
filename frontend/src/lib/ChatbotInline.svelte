@@ -1,8 +1,6 @@
 <script>
-  // Inicializar con saludo genérico dinámico
-  let messages = [
-    { who: "bot", text: "¡Hola! 👋 Cuéntame tu solicitud en lenguaje natural y te guío al trámite correcto." }
-  ];
+  // Inicializar con saludo genérico dinámico (se mostrará con delay)
+  let messages = [];
   let input = "";
   let sending = false;
   let currentCategory = null;
@@ -22,6 +20,24 @@
   let thinkingStatus = "Pensando"; // Estado dinámico del mensaje de pensamiento
   let thinkingInterval = null; // Intervalo para actualizar el estado dinámico
   let thinkingKey = 0; // Key para forzar re-render y animación suave
+  let showingDelayedMessage = false; // Flag para indicar que se está mostrando un mensaje con delay
+  
+  // Constantes para delays
+  const GREETING_DELAY = 600; // 600ms para saludos
+  const CONFIRMATION_DELAY = 800; // 800ms para confirmaciones
+  
+  // Mostrar saludo inicial SIN delay al cargar el componente
+  import { onMount } from 'svelte';
+  onMount(() => {
+    // Usar generateDynamicGreeting sin categoría/subcategoría para saludo genérico dinámico
+    const greeting = generateDynamicGreeting(null, null, studentData);
+    messages = [{ who: "bot", text: greeting }];
+    
+    queueMicrotask(() => {
+      const el = document.getElementById("chat-body-inline");
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  });
   
   // Función exportada para recibir categoría desde el padre
   export function selectCategory(category, subcategory, dataEstudiante = null, newProfileType = null, profileMeta = null) {
@@ -37,18 +53,26 @@
       profileId = profileMeta.profileId;
     }
     
-    const greeting = generateDynamicGreeting(category, subcategory, studentData);
-    messages = [{ who: "bot", text: greeting }];
+    // Limpiar mensajes anteriores
+    messages = [];
     conversationBlocked = false; // Resetear bloqueo
     needsConfirmation = false;
     needsRelatedRequestSelection = false;
     relatedRequests = [];
     selectedRelatedRequestId = "none";
     
-    queueMicrotask(() => {
-      const el = document.getElementById("chat-body-inline");
-      if (el) el.scrollTop = el.scrollHeight;
-    });
+    // Agregar delay antes de mostrar el saludo
+    showingDelayedMessage = true;
+    setTimeout(() => {
+      const greeting = generateDynamicGreeting(category, subcategory, studentData);
+      messages = [{ who: "bot", text: greeting }];
+      showingDelayedMessage = false;
+      
+      queueMicrotask(() => {
+        const el = document.getElementById("chat-body-inline");
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }, GREETING_DELAY);
   }
 
   export function updateProfileContext(newProfileType = "estudiante", data = null, profileMeta = null) {
@@ -70,8 +94,17 @@
       ].filter(Boolean);
       nombreFuente = partes.join(" ").trim();
     }
-    const nombreEstudiante = nombreFuente ? nombreFuente.split(" ")[0] : "";
+    // Capitalizar solo la primera letra del nombre
+    let nombreEstudiante = nombreFuente ? nombreFuente.split(" ")[0] : "";
+    if (nombreEstudiante) {
+      nombreEstudiante = nombreEstudiante.charAt(0).toUpperCase() + nombreEstudiante.slice(1).toLowerCase();
+    }
     const saludo = nombreEstudiante ? `¡Hola ${nombreEstudiante}! 👋` : "¡Hola! 👋";
+    
+    // Si no hay categoría ni subcategoría, retornar saludo genérico
+    if (!category && !subcategory) {
+      return `${saludo} Soy tu asistente virtual del Balcón de Servicios UNEMI. Estoy aquí para ayudarte con tus consultas y solicitudes. ¿En qué puedo asistirte hoy?`;
+    }
     
     const greetings = {
       "Academico": {
@@ -226,9 +259,35 @@
       
       // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
       const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
-      messages = [...messages, { who:"bot", text: reply, meta: data }];
+      const shouldConfirm = data.needs_confirmation || false;
+      const isGreeting = data.is_greeting || false;
+      const isHandoff = data.handoff || data.needs_handoff_details || false;
       
-      needsConfirmation = data.needs_confirmation || false;
+      // Si es un saludo, necesita confirmación, o es una respuesta operativa (handoff), agregar delay
+      if (isGreeting || shouldConfirm || isHandoff) {
+        showingDelayedMessage = true;
+        let delayTime = CONFIRMATION_DELAY; // Delay por defecto
+        if (isGreeting) {
+          delayTime = GREETING_DELAY;
+        } else if (isHandoff) {
+          delayTime = CONFIRMATION_DELAY; // Mismo delay que confirmación para handoff
+        }
+        setTimeout(() => {
+          messages = [...messages, { who:"bot", text: reply, meta: data }];
+          needsConfirmation = shouldConfirm;
+          showingDelayedMessage = false;
+          
+          queueMicrotask(() => {
+            const el = document.getElementById("chat-body-inline");
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }, delayTime);
+      } else {
+        // Sin delay para respuestas normales
+        messages = [...messages, { who:"bot", text: reply, meta: data }];
+        needsConfirmation = false;
+      }
+      
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
@@ -441,9 +500,35 @@
       
       // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
       const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
-      messages = [...messages, { who:"bot", text: reply, meta: data }];
+      const shouldConfirm = data.needs_confirmation || false;
+      const isGreeting = data.is_greeting || false;
+      const isHandoff = data.handoff || data.needs_handoff_details || false;
       
-      needsConfirmation = data.needs_confirmation || false;
+      // Si es un saludo, necesita confirmación, o es una respuesta operativa (handoff), agregar delay
+      if (isGreeting || shouldConfirm || isHandoff) {
+        showingDelayedMessage = true;
+        let delayTime = CONFIRMATION_DELAY; // Delay por defecto
+        if (isGreeting) {
+          delayTime = GREETING_DELAY;
+        } else if (isHandoff) {
+          delayTime = CONFIRMATION_DELAY; // Mismo delay que confirmación para handoff
+        }
+        setTimeout(() => {
+          messages = [...messages, { who:"bot", text: reply, meta: data }];
+          needsConfirmation = shouldConfirm;
+          showingDelayedMessage = false;
+          
+          queueMicrotask(() => {
+            const el = document.getElementById("chat-body-inline");
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }, delayTime);
+      } else {
+        // Sin delay para respuestas normales
+        messages = [...messages, { who:"bot", text: reply, meta: data }];
+        needsConfirmation = false;
+      }
+      
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
@@ -600,9 +685,34 @@
       
       // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
       const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
-      messages = [...messages, { who:"bot", text: reply, meta: data }];
-
-      needsConfirmation = data.needs_confirmation || false;
+      const shouldConfirm = data.needs_confirmation || false;
+      const isGreeting = data.is_greeting || false;
+      const isHandoff = data.handoff || data.needs_handoff_details || false;
+      
+      // Si es un saludo, necesita confirmación, o es una respuesta operativa (handoff), agregar delay
+      if (isGreeting || shouldConfirm || isHandoff) {
+        showingDelayedMessage = true;
+        let delayTime = CONFIRMATION_DELAY; // Delay por defecto
+        if (isGreeting) {
+          delayTime = GREETING_DELAY;
+        } else if (isHandoff) {
+          delayTime = CONFIRMATION_DELAY; // Mismo delay que confirmación para handoff
+        }
+        setTimeout(() => {
+          messages = [...messages, { who:"bot", text: reply, meta: data }];
+          needsConfirmation = shouldConfirm;
+          showingDelayedMessage = false;
+          
+          queueMicrotask(() => {
+            const el = document.getElementById("chat-body-inline");
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }, delayTime);
+      } else {
+        // Sin delay para respuestas normales
+        messages = [...messages, { who:"bot", text: reply, meta: data }];
+        needsConfirmation = false;
+      }
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
@@ -671,7 +781,13 @@
   <!-- Cuerpo del chat -->
   <div id="chat-body-inline" class="chat-body">
     {#each messages as m, idx}
-      <div class="msg {m.who}">
+      {@const isFirstMessage = idx === 0}
+      {@const isGreeting = isFirstMessage && m.who === "bot"}
+      <div 
+        class="msg {m.who} {isGreeting ? 'greeting-msg' : ''}"
+        class:msg-enter={!isGreeting}
+        class:greeting-enter={isGreeting}
+      >
         <div class="bubble">
           {#if m.who === "bot" && m.meta?.needs_related_request_selection && m.meta?.related_requests && m.meta.related_requests.length > 0}
             <!-- Formato mejorado para solicitudes relacionadas -->
@@ -746,17 +862,19 @@
       </div>
     {/each}
 
-    <!-- Mensaje de "Pensando..." -->
-    {#if sending}
-      <div class="msg bot">
+    <!-- Mensaje de "Pensando..." o delay -->
+    {#if sending || showingDelayedMessage}
+      <div class="msg bot typing-indicator">
         <div class="bubble thinking-bubble">
           <div class="processing-text">
             {#key thinkingKey}
-              <span class="thinking-text">{thinkingStatus}<span class="dots">
-                <span class="dot"></span>
-                <span class="dot"></span>
-                <span class="dot"></span>
-              </span></span>
+              <span class="thinking-text">
+                {#if showingDelayedMessage && !sending}
+                  Preparando respuesta<span class="animated-dots">...</span>
+                {:else}
+                  {thinkingStatus}<span class="animated-dots">...</span>
+                {/if}
+              </span>
             {/key}
           </div>
         </div>
@@ -896,59 +1014,255 @@
   border:1px solid var(--gray-200);
   border-radius:22px;
   box-shadow:0 10px 30px rgba(20,35,70,.06);
-  display:flex; flex-direction:column;
-  height:600px; overflow:hidden;
+  display:flex; 
+  flex-direction:column;
+  height:600px; 
+  overflow:hidden;
+  animation:containerFadeIn 0.5s ease-out;
+}
+
+@keyframes containerFadeIn{
+  from{
+    opacity:0;
+    transform:scale(0.98);
+  }
+  to{
+    opacity:1;
+    transform:scale(1);
+  }
 }
 
 /* Header */
 .chat-header{
-  display:flex; align-items:center; justify-content:space-between;
-  background:#0f2a57; color:#fff;
-  padding:14px 20px; font-weight:700; letter-spacing:.2px;
+  display:flex; 
+  align-items:center; 
+  justify-content:space-between;
+  background:#0f2a57; 
+  color:#fff;
+  padding:14px 20px; 
+  font-weight:700; 
+  letter-spacing:.2px;
   border-radius:22px 22px 0 0;
+  animation:headerSlideDown 0.4s ease-out;
 }
-.header-title{font-size:1.1rem; color:#fff}
+
+@keyframes headerSlideDown{
+  from{
+    opacity:0;
+    transform:translateY(-10px);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0);
+  }
+}
+
+.header-title{
+  font-size:1.1rem; 
+  color:#fff;
+}
 
 /* Body */
 .chat-body{
   background:
     radial-gradient(1200px 200px at 50% -80px, rgba(27,102,209,.08), transparent 60%),
     linear-gradient(180deg,#ffffff,#f6f9ff);
-  flex:1; overflow:auto; padding:16px;
+  flex:1; 
+  overflow:auto; 
+  padding:16px;
+  scroll-behavior:smooth;
 }
-.chat-body::-webkit-scrollbar{width:8px}
-.chat-body::-webkit-scrollbar-thumb{background:#dde3ea; border-radius:10px}
+
+.chat-body::-webkit-scrollbar{
+  width:8px;
+}
+
+.chat-body::-webkit-scrollbar-track{
+  background:transparent;
+}
+
+.chat-body::-webkit-scrollbar-thumb{
+  background:#dde3ea; 
+  border-radius:10px;
+  transition:background 0.2s;
+}
+
+.chat-body::-webkit-scrollbar-thumb:hover{
+  background:#cbd5e0;
+}
 
 /* Mensajes */
-.msg{display:flex; margin:10px 0}
+.msg{
+  display:flex; 
+  margin:10px 0;
+  opacity:0;
+  transform:translateY(10px);
+  animation:msgFadeIn 0.4s ease-out forwards;
+}
+
+/* Animación de entrada para mensajes normales */
+.msg-enter{
+  animation:msgSlideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Animación especial para saludo inicial */
+.greeting-enter{
+  animation:greetingEntrance 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Animación para typing indicator */
+.typing-indicator{
+  animation:typingPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes msgFadeIn{
+  from{
+    opacity:0;
+    transform:translateY(10px);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0);
+  }
+}
+
+@keyframes msgSlideIn{
+  0%{
+    opacity:0;
+    transform:translateY(20px) scale(0.95);
+  }
+  100%{
+    opacity:1;
+    transform:translateY(0) scale(1);
+  }
+}
+
+@keyframes greetingEntrance{
+  0%{
+    opacity:0;
+    transform:translateY(30px) scale(0.9);
+  }
+  50%{
+    transform:translateY(-5px) scale(1.02);
+  }
+  100%{
+    opacity:1;
+    transform:translateY(0) scale(1);
+  }
+}
+
+@keyframes typingPulse{
+  0%, 100%{
+    opacity:0.6;
+    transform:translateY(0);
+  }
+  50%{
+    opacity:1;
+    transform:translateY(-2px);
+  }
+}
+
 .msg .bubble{
   max-width:75%;
   padding:12px 14px;
   border-radius:14px;
   border:1px solid var(--gray-200);
   background:#fff;
-  line-height:1.45; word-break:break-word;
+  line-height:1.45; 
+  word-break:break-word;
+  position:relative;
+  overflow:hidden;
 }
+
+/* Efecto de brillo sutil en burbujas nuevas */
+.msg-enter .bubble::before{
+  content:'';
+  position:absolute;
+  top:0;
+  left:-100%;
+  width:100%;
+  height:100%;
+  background:linear-gradient(
+    90deg,
+    transparent,
+    rgba(255,255,255,0.3),
+    transparent
+  );
+  animation:shine 0.6s ease-out;
+}
+
+@keyframes shine{
+  0%{
+    left:-100%;
+  }
+  100%{
+    left:100%;
+  }
+}
+
 .message-text{
   white-space:pre-line;
+  animation:textReveal 0.3s ease-out;
+}
+
+@keyframes textReveal{
+  from{
+    opacity:0;
+  }
+  to{
+    opacity:1;
+  }
 }
 
 /* Usuario = azul oscuro */
-.msg.user{justify-content:flex-end}
+.msg.user{
+  justify-content:flex-end;
+  animation-delay:0.1s;
+}
+
 .msg.user .bubble{
   background:#1b66d1;
   color:#fff;
   border-color:#1b66d1;
+  animation:userBubbleSlide 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+@keyframes userBubbleSlide{
+  0%{
+    opacity:0;
+    transform:translateX(20px) scale(0.9);
+  }
+  100%{
+    opacity:1;
+    transform:translateX(0) scale(1);
+  }
+}
+
 .msg.user .message-text{
   color:#fff;
 }
 
 /* Bot = blanco/gris claro */
+.msg.bot{
+  animation-delay:0.1s;
+}
+
 .msg.bot .bubble{
   background:#fff;
   border-color:#e4e7ee;
   color:#0f2136;
+  animation:botBubbleSlide 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes botBubbleSlide{
+  0%{
+    opacity:0;
+    transform:translateX(-20px) scale(0.9);
+  }
+  100%{
+    opacity:1;
+    transform:translateX(0) scale(1);
+  }
 }
 
 /* Select de solicitudes relacionadas */
@@ -967,21 +1281,38 @@
   background: #fff;
   color: #0f2136;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%230f2136' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 14px center;
   padding-right: 40px;
+  animation:selectSlideIn 0.3s ease-out;
 }
+
+@keyframes selectSlideIn{
+  from{
+    opacity:0;
+    transform:translateY(5px);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0);
+  }
+}
+
 .related-request-select:hover{
   border-color: #1b66d1;
   background-color: #f6f7fb;
+  transform:translateY(-1px);
+  box-shadow:0 2px 8px rgba(27,102,209,0.1);
 }
+
 .related-request-select:focus{
   outline: none;
   border-color: #1b66d1;
-  box-shadow: 0 0 0 2px rgba(27,102,209,.1);
+  box-shadow: 0 0 0 3px rgba(27,102,209,.15);
+  transform:translateY(-1px);
 }
 .related-request-select:disabled{
   opacity: 0.5;
@@ -998,10 +1329,49 @@
   color: #fff;
   border: 0;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position:relative;
+  overflow:hidden;
+  animation:buttonSlideIn 0.3s ease-out 0.1s backwards;
 }
+
+@keyframes buttonSlideIn{
+  from{
+    opacity:0;
+    transform:translateY(5px);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0);
+  }
+}
+
+.related-request-submit-btn::before{
+  content:'';
+  position:absolute;
+  top:50%;
+  left:50%;
+  width:0;
+  height:0;
+  border-radius:50%;
+  background:rgba(255,255,255,0.2);
+  transform:translate(-50%, -50%);
+  transition:width 0.4s, height 0.4s;
+}
+
+.related-request-submit-btn:active::before{
+  width:300px;
+  height:300px;
+}
+
 .related-request-submit-btn:hover:not(:disabled){
   background: #0f4a8f;
+  transform:translateY(-2px);
+  box-shadow:0 4px 12px rgba(27,102,209,0.3);
+}
+
+.related-request-submit-btn:active:not(:disabled){
+  transform:translateY(0);
 }
 .related-request-submit-btn:disabled{
   opacity: 0.5;
@@ -1009,13 +1379,32 @@
 }
 
 /* Input inferior */
-.chat-input{background:#fbfcff; border-top:1px solid var(--gray-200); padding:16px; border-radius:0 0 22px 22px}
+.chat-input{
+  background:#fbfcff; 
+  border-top:1px solid var(--gray-200); 
+  padding:16px; 
+  border-radius:0 0 22px 22px;
+  animation:inputSlideUp 0.3s ease-out;
+}
+
+@keyframes inputSlideUp{
+  from{
+    transform:translateY(10px);
+    opacity:0;
+  }
+  to{
+    transform:translateY(0);
+    opacity:1;
+  }
+}
+
 .input-row{
   display:flex; 
   align-items:flex-end; 
   gap:8px; 
   margin-bottom:0;
 }
+
 .chat-input textarea{
   flex:1; 
   min-height:44px; 
@@ -1030,10 +1419,17 @@
   outline:none;
   font-size:0.95rem;
   line-height:1.5;
+  transition:all 0.2s ease;
 }
+
 .chat-input textarea:focus{
   border-color:#1b66d1;
-  box-shadow:0 0 0 2px rgba(27,102,209,.1);
+  box-shadow:0 0 0 3px rgba(27,102,209,.15);
+  transform:translateY(-1px);
+}
+
+.chat-input textarea:focus::placeholder{
+  opacity:0.5;
 }
 .chat-input textarea::placeholder{
   color:#6d7382;
@@ -1057,14 +1453,22 @@
   background:#fff;
   color:#6d7382;
   cursor:pointer;
-  transition:all 0.2s;
+  transition:all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   padding:0;
   flex-shrink:0;
+  position:relative;
 }
+
 .file-upload-btn:hover{
   background:#f6f7fb;
   border-color:#1b66d1;
   color:#1b66d1;
+  transform:translateY(-2px);
+  box-shadow:0 2px 8px rgba(27,102,209,0.15);
+}
+
+.file-upload-btn:active{
+  transform:translateY(0);
 }
 
 .send-btn-icon{
@@ -1078,16 +1482,45 @@
   color:#fff;
   border:0;
   cursor:pointer;
-  transition:all 0.2s;
+  transition:all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   padding:0;
   flex-shrink:0;
+  position:relative;
+  overflow:hidden;
 }
+
+.send-btn-icon::before{
+  content:'';
+  position:absolute;
+  top:50%;
+  left:50%;
+  width:0;
+  height:0;
+  border-radius:50%;
+  background:rgba(255,255,255,0.3);
+  transform:translate(-50%, -50%);
+  transition:width 0.3s, height 0.3s;
+}
+
+.send-btn-icon:active::before{
+  width:200px;
+  height:200px;
+}
+
 .send-btn-icon:hover:not(:disabled){
   background:#0f4a8f;
+  transform:scale(1.05);
+  box-shadow:0 4px 12px rgba(27,102,209,0.3);
 }
+
+.send-btn-icon:active:not(:disabled){
+  transform:scale(0.95);
+}
+
 .send-btn-icon:disabled{
   opacity:.5; 
   cursor:not-allowed;
+  transform:none;
 }
 
 .file-selected-info{
@@ -1114,12 +1547,84 @@
 }
 
 /* Confirmación sí/no */
-.confirmation-buttons{display:flex; gap:8px; margin-top:8px}
-.confirm-btn{flex:1; padding:12px 14px; border-radius:10px; font-weight:700; cursor:pointer; border:0}
-.confirm-btn.yes{background:#1b66d1; color:#fff}
-.confirm-btn.yes:hover{background:#0f4a8f}
-.confirm-btn.no{background:var(--gray-050); color:#0f2136; border:1px solid var(--gray-200)}
-.confirm-btn.no:hover{background:#eef2f7}
+.confirmation-buttons{
+  display:flex; 
+  gap:8px; 
+  margin-top:8px;
+  animation:buttonsSlideIn 0.4s ease-out;
+}
+
+@keyframes buttonsSlideIn{
+  from{
+    opacity:0;
+    transform:translateY(10px);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0);
+  }
+}
+
+.confirm-btn{
+  flex:1; 
+  padding:12px 14px; 
+  border-radius:10px; 
+  font-weight:700; 
+  cursor:pointer; 
+  border:0;
+  transition:all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position:relative;
+  overflow:hidden;
+}
+
+.confirm-btn::before{
+  content:'';
+  position:absolute;
+  top:50%;
+  left:50%;
+  width:0;
+  height:0;
+  border-radius:50%;
+  background:rgba(255,255,255,0.2);
+  transform:translate(-50%, -50%);
+  transition:width 0.4s, height 0.4s;
+}
+
+.confirm-btn:active::before{
+  width:300px;
+  height:300px;
+}
+
+.confirm-btn.yes{
+  background:#1b66d1; 
+  color:#fff;
+}
+
+.confirm-btn.yes:hover{
+  background:#0f4a8f;
+  transform:translateY(-2px);
+  box-shadow:0 4px 12px rgba(27,102,209,0.3);
+}
+
+.confirm-btn.yes:active{
+  transform:translateY(0);
+}
+
+.confirm-btn.no{
+  background:var(--gray-050); 
+  color:#0f2136; 
+  border:1px solid var(--gray-200);
+}
+
+.confirm-btn.no:hover{
+  background:#eef2f7;
+  transform:translateY(-2px);
+  box-shadow:0 2px 8px rgba(0,0,0,0.1);
+}
+
+.confirm-btn.no:active{
+  transform:translateY(0);
+}
 
 /* Aviso de conversación bloqueada */
 .blocked-notice{
@@ -1136,51 +1641,148 @@
 }
 
 /* Pensando… */
-.thinking-bubble{display:flex; align-items:center; gap:8px}
-.processing-text{display:inline-flex; align-items:center; font-weight:700; color:#0f2136}
+.thinking-bubble{
+  display:flex; 
+  align-items:center; 
+  gap:8px;
+  position:relative;
+}
+
+.thinking-bubble::after{
+  content:'';
+  position:absolute;
+  top:0;
+  left:0;
+  right:0;
+  bottom:0;
+  background:linear-gradient(
+    90deg,
+    transparent,
+    rgba(255,255,255,0.4),
+    transparent
+  );
+  animation:thinkingShimmer 2s infinite;
+}
+
+@keyframes thinkingShimmer{
+  0%{
+    transform:translateX(-100%);
+  }
+  100%{
+    transform:translateX(100%);
+  }
+}
+
+.processing-text{
+  display:inline-flex; 
+  align-items:center; 
+  font-weight:700; 
+  color:#0f2136;
+  position:relative;
+  z-index:1;
+}
+
 .thinking-text{
   display:inline-flex;
   align-items:center;
-  animation: textFade 0.5s ease-in-out;
+  animation:textFade 0.5s ease-in-out;
 }
+
 @keyframes textFade{
-  0%{opacity:0.4}
-  100%{opacity:1}
+  0%{
+    opacity:0.4;
+    transform:translateX(-5px);
+  }
+  100%{
+    opacity:1;
+    transform:translateX(0);
+  }
 }
-.processing-text .dots{
-  display:inline-flex;
-  gap:4px;
-  margin-left:8px;
-  vertical-align:middle;
-  align-items:center;
+
+/* Puntos suspensivos animados como texto */
+.processing-text .animated-dots{
+  display:inline;
+  color:#0f2136;
+  font-weight:700;
+  font-size:inherit;
+  font-family:inherit;
+  animation:dotsBlink 1.4s infinite;
 }
-.processing-text .dot{
-  width:4px;
-  height:4px;
-  border-radius:999px;
-  background:#c96f22;
-  animation:bounce 1.2s infinite ease-in-out;
-  display:inline-block;
+
+@keyframes dotsBlink{
+  0%, 20%{
+    opacity:0.3;
+  }
+  50%{
+    opacity:1;
+  }
+  80%, 100%{
+    opacity:0.3;
+  }
 }
-.processing-text .dot:nth-child(2){animation-delay:.15s}
-.processing-text .dot:nth-child(3){animation-delay:.3s}
-@keyframes bounce{0%,80%,100%{transform:translateY(0); opacity:.5} 40%{transform:translateY(-4px); opacity:1}}
 .processing-indicator{display:flex; justify-content:flex-end; gap:10px; margin-top:8px}
 .cancel-btn{padding:6px 12px; font-size:.85rem; font-weight:700; border-radius:10px;
   background:#fee2e2; color:#991b1b; border:1px solid #fecaca; cursor:pointer}
 .cancel-btn:hover{background:#fca5a5; border-color:#f87171}
 
 /* Fuentes PDF dentro de respuestas */
-.pdf-sources{margin-top:12px; padding-top:10px; border-top:1px solid #dde3ea; display:flex; flex-direction:column; gap:8px}
-.pdf-sources-label{font-size:.78rem; font-weight:700; color:#0f2136; margin-bottom:4px}
+.pdf-sources{
+  margin-top:12px; 
+  padding-top:10px; 
+  border-top:1px solid #dde3ea; 
+  display:flex; 
+  flex-direction:column; 
+  gap:8px;
+  animation:pdfSourcesFadeIn 0.4s ease-out;
+}
+
+@keyframes pdfSourcesFadeIn{
+  from{
+    opacity:0;
+    transform:translateY(5px);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0);
+  }
+}
+
+.pdf-sources-label{
+  font-size:.78rem; 
+  font-weight:700; 
+  color:#0f2136; 
+  margin-bottom:4px;
+}
+
 .pdf-source-item{
-  display:flex; align-items:center; gap:8px; flex-wrap:wrap
+  display:flex; 
+  align-items:center; 
+  gap:8px; 
+  flex-wrap:wrap;
+  transition:transform 0.2s;
 }
+
+.pdf-source-item:hover{
+  transform:translateX(3px);
+}
+
 .pdf-link{
-  display:inline-flex; align-items:center; font-size:.82rem; font-weight:700;
-  color:#1b66d1; text-decoration:none; padding:4px 8px; border-radius:8px;
+  display:inline-flex; 
+  align-items:center; 
+  font-size:.82rem; 
+  font-weight:700;
+  color:#1b66d1; 
+  text-decoration:none; 
+  padding:4px 8px; 
+  border-radius:8px;
+  transition:all 0.2s ease;
 }
-.pdf-link:hover{background:var(--blue-100); text-decoration:underline}
+
+.pdf-link:hover{
+  background:var(--blue-100); 
+  text-decoration:underline;
+  transform:scale(1.05);
+}
 .pdf-pages{
   font-size:.75rem; color:var(--gray-500); font-style:italic
 }
@@ -1194,23 +1796,61 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  animation:relatedRequestsFadeIn 0.5s ease-out;
 }
+
+@keyframes relatedRequestsFadeIn{
+  from{
+    opacity:0;
+    transform:translateY(10px);
+  }
+  to{
+    opacity:1;
+    transform:translateY(0);
+  }
+}
+
 .related-requests-intro{
   font-size: 0.95rem;
   color: #0f2136;
   font-weight: 500;
   margin-bottom: 4px;
 }
+
 .related-requests-list{
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
+
 .related-request-item{
   background: #f8f9fa;
   border: 1px solid #e4e7ee;
   border-radius: 10px;
   padding: 12px 14px;
+  transition:all 0.2s ease;
+  animation:requestItemSlideIn 0.4s ease-out backwards;
+}
+
+.related-request-item:nth-child(1){animation-delay:0.1s}
+.related-request-item:nth-child(2){animation-delay:0.2s}
+.related-request-item:nth-child(3){animation-delay:0.3s}
+
+@keyframes requestItemSlideIn{
+  from{
+    opacity:0;
+    transform:translateX(-10px);
+  }
+  to{
+    opacity:1;
+    transform:translateX(0);
+  }
+}
+
+.related-request-item:hover{
+  transform:translateX(5px);
+  box-shadow:0 2px 8px rgba(0,0,0,0.1);
+  border-color:#1b66d1;
 }
 .related-request-header{
   display: flex;

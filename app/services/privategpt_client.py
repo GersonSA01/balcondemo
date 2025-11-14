@@ -107,11 +107,119 @@ class PrivateGPTClient:
                     headers={"Connection": "close"}
                 )
                 response.raise_for_status()
-                return response.json()
+                result = response.json()
+                
+                # Limpiar archivos temporales después de ingestión exitosa
+                self._cleanup_tmp_files()
+                
+                return result
         except requests.exceptions.RequestException as e:
             return {
                 "error": str(e),
                 "success": False
+            }
+    
+    def _cleanup_tmp_files(self):
+        """
+        Limpia automáticamente archivos temporales (que empiezan con 'tmp') de PrivateGPT.
+        Se ejecuta después de cada ingestión exitosa.
+        """
+        try:
+            response = self.list_documents()
+            if not response or "data" not in response:
+                return
+            
+            documents = response.get("data", [])
+            tmp_docs = [
+                doc for doc in documents
+                if doc.get("doc_metadata", {}).get("file_name", "").lower().startswith("tmp")
+            ]
+            
+            if tmp_docs:
+                print(f"🧹 [Auto-cleanup] Encontrados {len(tmp_docs)} archivos temporales, eliminando...")
+                eliminados = 0
+                errores = 0
+                for doc in tmp_docs:
+                    doc_id = doc.get("doc_id")
+                    file_name = doc.get("doc_metadata", {}).get("file_name", "Unknown")
+                    try:
+                        result = self.delete_document(doc_id)
+                        if result.get("success"):
+                            print(f"   ✅ Eliminado: {file_name}")
+                            eliminados += 1
+                        else:
+                            print(f"   ⚠️ Error al eliminar {file_name}: {result.get('error', 'Unknown')}")
+                            errores += 1
+                    except Exception as e:
+                        print(f"   ⚠️ Excepción al eliminar {file_name}: {str(e)}")
+                        errores += 1
+                
+                if eliminados > 0:
+                    print(f"🧹 [Auto-cleanup] Resumen: {eliminados} eliminados, {errores} errores")
+        except Exception as e:
+            # No fallar si la limpieza falla, solo loggear
+            print(f"⚠️ [Auto-cleanup] Error en limpieza automática: {str(e)}")
+    
+    def cleanup_all_tmp_files(self) -> Dict[str, Any]:
+        """
+        Limpia TODOS los archivos temporales de forma explícita.
+        Útil para ejecutar manualmente o desde un script.
+        
+        Returns:
+            Dict con resumen de la limpieza
+        """
+        try:
+            response = self.list_documents()
+            if not response or "data" not in response:
+                return {
+                    "success": False,
+                    "error": "No se pudo obtener la lista de documentos",
+                    "eliminados": 0,
+                    "errores": 0
+                }
+            
+            documents = response.get("data", [])
+            tmp_docs = [
+                doc for doc in documents
+                if doc.get("doc_metadata", {}).get("file_name", "").lower().startswith("tmp")
+            ]
+            
+            if not tmp_docs:
+                return {
+                    "success": True,
+                    "message": "No se encontraron archivos temporales",
+                    "eliminados": 0,
+                    "errores": 0
+                }
+            
+            eliminados = 0
+            errores = 0
+            
+            for doc in tmp_docs:
+                doc_id = doc.get("doc_id")
+                file_name = doc.get("doc_metadata", {}).get("file_name", "Unknown")
+                try:
+                    result = self.delete_document(doc_id)
+                    if result.get("success"):
+                        eliminados += 1
+                    else:
+                        errores += 1
+                except Exception:
+                    errores += 1
+            
+            return {
+                "success": True,
+                "message": f"Limpieza completada: {eliminados} eliminados, {errores} errores",
+                "eliminados": eliminados,
+                "errores": errores,
+                "total_encontrados": len(tmp_docs)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "eliminados": 0,
+                "errores": 0
             }
     
     def ingest_text(self, file_name: str, text: str) -> Dict[str, Any]:
@@ -137,7 +245,12 @@ class PrivateGPTClient:
                 headers={"Connection": "close"}
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+            
+            # Limpiar archivos temporales después de ingestión exitosa
+            self._cleanup_tmp_files()
+            
+            return result
         except requests.exceptions.RequestException as e:
             return {
                 "error": str(e),
@@ -173,36 +286,21 @@ class PrivateGPTClient:
                     "success": False
                 }
             
-            # Procesar mensajes manteniendo el contexto de sistema si existe
+            # Procesar mensajes manteniendo el role="system" para que PrivateGPT lo combine con default_query_system_prompt
+            # PrivateGPT espera recibir mensajes con role="system" y los combina automáticamente con su prompt del sistema
             filtered_messages = []
-            system_context = None
             
             for msg in messages:
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
                 
-                if role == "system":
-                    # Guardar contexto del sistema para agregarlo al primer mensaje del usuario
-                    system_context = content
-                elif role in ("user", "assistant") and content:
-                    # Si hay contexto de sistema y es el primer mensaje de usuario, agregarlo
-                    if system_context and role == "user" and not filtered_messages:
-                        filtered_messages.append({
-                            "role": "user",
-                            "content": f"[Contexto del sistema: {system_context}]\n\n{str(content)}"
-                        })
-                        system_context = None  # Ya usado
-                    else:
-                        filtered_messages.append({
-                            "role": role,
-                            "content": str(content)
-                        })
-            
-            # Si quedó contexto de sistema sin usar, agregarlo al primer mensaje
-            if system_context and filtered_messages:
-                first_msg = filtered_messages[0]
-                if first_msg.get("role") == "user":
-                    first_msg["content"] = f"[Contexto del sistema: {system_context}]\n\n{first_msg['content']}"
+                # Mantener todos los roles como están (system, user, assistant)
+                # PrivateGPT maneja correctamente los mensajes system y los combina con default_query_system_prompt
+                if content:  # Solo agregar si tiene contenido
+                    filtered_messages.append({
+                        "role": role,
+                        "content": str(content)
+                    })
             
             if not filtered_messages:
                 return {
@@ -221,7 +319,13 @@ class PrivateGPTClient:
             
             endpoint_url = f"{self.base_url}/v1/chat/completions"
             print(f"📤 [PrivateGPT] Haciendo POST a: {endpoint_url}")
-            print(f"   Payload: {json.dumps(data, indent=2, default=str)[:500]}...")
+            print(f"   Payload completo:")
+            print(f"   {json.dumps(data, indent=2, default=str, ensure_ascii=False)}")
+            print(f"   Mensajes enviados:")
+            for i, msg in enumerate(data.get("messages", [])):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")[:200]
+                print(f"     [{i}] role={role}: {content}...")
             # Para chat completions, usar timeout más largo (60 segundos)
             # ya que el LLM puede tardar en procesar y generar respuesta
             chat_timeout = 60
@@ -247,6 +351,11 @@ class PrivateGPTClient:
                 print(f"   ✅ Petición completada")
                 print(f"📥 [PrivateGPT] Respuesta recibida - Status: {response.status_code}")
                 print(f"   Headers recibidos: {dict(response.headers)}")
+                
+                # Log detallado de la respuesta antes de parsear
+                response_text_preview = response.text[:1000] if hasattr(response, 'text') else str(response.content)[:1000]
+                print(f"   📄 Respuesta raw (primeros 1000 chars):")
+                print(f"   {response_text_preview}")
                 
                 try:
                     # Capturar detalles del error si hay
@@ -301,9 +410,57 @@ class PrivateGPTClient:
                     error_msg = f"{error_msg}: {error_detail}"
                 except:
                     error_msg = f"{error_msg}: {e.response.text[:500]}"
-            
             return {
                 "error": error_msg,
+                "success": False
+            }
+    
+    def list_ingested(self) -> Dict[str, Any]:
+        """
+        Lista todos los documentos ingestionados en PrivateGPT.
+        
+        Returns:
+            Dict con lista de documentos ingestionados
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/v1/ingest/list",
+                timeout=self.timeout,
+                headers={"Connection": "close"}
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": str(e),
+                "success": False,
+                "data": []
+            }
+    
+    def delete_document(self, doc_id: str) -> Dict[str, Any]:
+        """
+        Elimina un documento ingestionado de PrivateGPT.
+        
+        Args:
+            doc_id: ID del documento a eliminar
+        
+        Returns:
+            Dict con resultado de la eliminación
+        """
+        try:
+            response = requests.delete(
+                f"{self.base_url}/v1/ingest/{doc_id}",
+                timeout=self.timeout,
+                headers={"Connection": "close"}
+            )
+            response.raise_for_status()
+            return {
+                "success": True,
+                "message": f"Documento {doc_id} eliminado exitosamente"
+            }
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": str(e),
                 "success": False
             }
     
@@ -358,7 +515,7 @@ class PrivateGPTClient:
                 "success": False
             }
     
-    def delete_document(self, doc_id: str) -> bool:
+    def delete_document(self, doc_id: str) -> Dict[str, Any]:
         """
         Elimina un documento por ID.
         
@@ -366,7 +523,7 @@ class PrivateGPTClient:
             doc_id: ID del documento a eliminar
         
         Returns:
-            True si se eliminó correctamente, False en caso contrario
+            Dict con resultado de la eliminación
         """
         try:
             response = requests.delete(
@@ -375,9 +532,15 @@ class PrivateGPTClient:
                 headers={"Connection": "close"}
             )
             response.raise_for_status()
-            return True
-        except requests.exceptions.RequestException:
-            return False
+            return {
+                "success": True,
+                "message": f"Documento {doc_id} eliminado exitosamente"
+            }
+        except requests.exceptions.RequestException as e:
+            return {
+                "error": str(e),
+                "success": False
+            }
 
 
 # Instancia global del cliente

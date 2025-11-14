@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import balcon_view, chat_api, taxonomia_api, estudiante_api, usuarios_api, serve_pdf
+from .views import balcon_view, chat_api, taxonomia_api, estudiante_api, usuarios_api, serve_pdf, limpiar_archivos_tmp_api
 
 urlpatterns = [
     path('', balcon_view, name='balcon'),
@@ -8,5 +8,6 @@ urlpatterns = [
     path('api/usuarios/', usuarios_api, name='usuarios_api'),
     path('api/estudiante/', estudiante_api, name='estudiante_api'),
     path('api/pdf/<path:pdf_path>', serve_pdf, name='serve_pdf'),  # <path:> permite subdirectorios
+    path('api/limpiar-tmp/', limpiar_archivos_tmp_api, name='limpiar_tmp_api'),
 ]
 

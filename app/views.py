@@ -994,3 +994,26 @@ def balcon_servicios_api(request):
         }, status=500)
 
 
+def limpiar_archivos_tmp_api(request):
+    """Endpoint para limpiar archivos temporales manualmente."""
+    if request.method != "POST":
+        return JsonResponse({
+            "success": False,
+            "error": "Método no permitido. Use POST."
+        }, status=405)
+    
+    try:
+        from app.services.privategpt_client import get_privategpt_client
+        client = get_privategpt_client()
+        result = client.cleanup_all_tmp_files()
+        
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({
+            "success": False,
+            "error": str(e),
+            "eliminados": 0,
+            "errores": 0
+        }, status=500)
+
+

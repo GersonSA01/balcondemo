@@ -183,6 +183,29 @@
           "descripcion": "SOLICITUD GENERAL"
         }
       }
+    },
+    {
+      "id": 9,
+      "codigo": "SOL-GEN-202511-000009",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251114123815.pdf",
+      "descripcion": "DSFS",
+      "numero": 7,
+      "fecha_creacion": "2025-11-14T12:38:15.041224",
+      "fecha_modificacion": "2025-11-14T12:38:15.041224",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
     }
   ],
   "historiales": [
@@ -289,10 +312,23 @@
       "archivo": null,
       "fecha_creacion": "2025-11-14T08:43:15.705354",
       "servicio": "Solicitud General"
+    },
+    {
+      "id": 9,
+      "solicitud_id": 9,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-14T12:38:15.041224",
+      "servicio": "Solicitud General"
     }
   ],
   "requisitos": [],
-  "next_id": 9,
-  "next_historial_id": 9,
+  "next_id": 10,
+  "next_historial_id": 10,
   "next_requisito_id": 1
 }

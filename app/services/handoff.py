@@ -2,8 +2,7 @@
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 import json
-from .config import TAU_NORMA, TAU_MIN, llm
-from .config import ALLOW_HANDOFF_LLM, llm_budget_remaining
+from .config import TAU_NORMA, TAU_MIN
 
 # Intenciones críticas que requieren intervención humana
 CRITICAL_INTENTS = {
@@ -307,184 +306,161 @@ def missing_required_docs(intent_short: str, slots: Dict[str, Any]) -> List[str]
     return missing
 
 
-def classify_with_llm(
-    user_text: str,
-    intent_short: str,
-    category: Optional[str],
-    subcategory: Optional[str],
-    slots: Dict[str, Any]
-) -> Dict[str, Any]:
+def classify_with_heuristics(intent: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Usa LLM para clasificar inteligentemente la solicitud y determinar el canal correcto.
+    Clasificación determinista usando heurísticas.
+    Usa intent_code, accion, objeto y texto libre para mapear a department/channel.
     
     Args:
-        user_text: Texto original del usuario
-        intent_short: Intención corta extraída
-        category: Categoría detectada
-        subcategory: Subcategoría detectada
-        slots: Slots de la intención
+        intent: Dict con slots de intención (resultado de interpretar_intencion_principal)
     
     Returns:
         {
             "answer_type": "informativo" | "operativo",
-            "department": "académico" | "financiero" | "bienestar" | "tic" | "biblioteca" | "vinculación" | "general" (determinado automáticamente desde el JSON),
-            "channel": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS" | "DIRECCIÓN FINANCIERA" | ... (determinado automáticamente del JSON),
-            "reasoning": "explicación breve"
+            "department": "académico" | "financiero" | "bienestar" | "tic" | "biblioteca" | "vinculación" | "general",
+            "channel": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS" | ...,
+            "reasoning": "Clasificado por reglas heurísticas"
         }
     """
-    # El LLM debe determinar department y channel analizando el JSON de departamentos y la consulta del usuario
-    # Construir sección con JSON de mapeo de departamentos
-    mapeo_cat_sub = get_mapeo_categoria_subcategoria()
-    mapeo_departamentos_json = json.dumps(mapeo_cat_sub, ensure_ascii=False, indent=2)
+    intent_code = intent.get("intent_code", "") or "otro"
+    accion = (intent.get("accion") or "").lower()
+    objeto = (intent.get("objeto") or "").lower()
+    texto = (intent.get("detalle_libre") or intent.get("original_user_message") or "").lower()
     
-    # Construir campos del JSON - siempre pedimos department y channel al LLM
-    json_fields = """
-  "answer_type": "informativo" o "operativo" (SOLO uno de estos dos valores),
-  "department": "académico | financiero | bienestar | administrativo | tic | biblioteca | vinculación | general",
-  "channel": "nombre del departamento específico",
-  "reasoning": "explicación breve (max 20 palabras)"""
-    
-    department_section = f"""
-MAPEO DE DEPARTAMENTOS (estructura JSON desde handoff_config.json):
-{mapeo_departamentos_json}
-
-CANALES DISPONIBLES (departamentos reales de UNEMI):
-{chr(10).join([f"- {dept}" for dept in DEPARTAMENTOS_REALES])}
-
-REGLAS PARA DETERMINAR department y channel:
-1. Analiza la solicitud del usuario y el JSON de mapeo de departamentos arriba
-2. Identifica qué categoría/subcategoría mejor corresponde a la solicitud del usuario
-3. El campo "department" DEBE extraerse EXCLUSIVAMENTE del análisis del JSON arriba:
-   - Analiza el JSON para ver qué categoría corresponde a la solicitud
-   - Luego analiza a qué departamento real mapea esa categoría/subcategoría en el JSON
-   - Determina el department genérico según el departamento real:
-     * Si el departamento real contiene "BIENESTAR" → department="bienestar"
-     * Si el departamento real contiene "FINANCIERA" → department="financiero"
-     * Si el departamento real contiene "VINCULACIÓN" → department="vinculación"
-     * Si el departamento real contiene "BIBLIOTECA" o "RECURSOS PARA EL APRENDIZAJE" → department="biblioteca"
-     * Si el departamento real contiene "TECNOLOGÍA" o "TIC" → department="tic"
-     * Si el departamento real contiene "ACADÉMICOS" o "VICERRECTORADO" → department="académico"
-     * Si NO encuentras una categoría que corresponda en el JSON → department="general"
-4. El campo "channel" debe ser EXACTAMENTE el valor del departamento real que aparece en el JSON para esa categoría/subcategoría (ej: "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS", "DIRECCIÓN FINANCIERA", etc.)
-5. Si la solicitud no encaja en ninguna categoría/subcategoría del JSON, usa department="general" y channel="DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
-6. El campo "channel" debe ser EXACTAMENTE uno de los departamentos listados arriba (respetar mayúsculas y acentos)
-
-IMPORTANTE: 
-- El campo "department" DEBE extraerse EXCLUSIVAMENTE del análisis del JSON de mapeo arriba
-- NO uses listas predefinidas, analiza el JSON para determinar el department según el departamento real al que mapea
-- Si no encuentras correspondencia en el JSON → department="general" y channel="DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
-- Responde SOLO con JSON válido, sin texto adicional, sin markdown, sin explicaciones"""
-    
-    prompt = f"""Analiza esta solicitud de un estudiante universitario y clasifícala:
-
-SOLICITUD DEL USUARIO: "{user_text}"
-INTENCIÓN DETECTADA: "{intent_short}"
-CATEGORÍA: "{category or 'No detectada'}"
-SUBCATEGORÍA: "{subcategory or 'No detectada'}"
-
-RESPONDE ÚNICAMENTE CON UN JSON VÁLIDO (sin markdown, sin texto adicional, sin explicaciones):
-
-{{{json_fields}
-}}
-
-REGLAS OBLIGATORIAS:
-1. El campo "answer_type" DEBE ser EXACTAMENTE uno de estos dos valores: "informativo" o "operativo"
-   - "informativo": Consulta de datos, definiciones, horarios, requisitos, contactos, porcentajes, pasos para hacer algo, instrucciones, guías, "cómo hacer X", cualquier pregunta que se pueda responder con información de documentos
-   - "operativo": Cambio de estado, modificar algo, anular, homologar, pagar, tramitar, cualquier solicitud que requiera acción humana para cambiar o procesar algo
-
-2. El campo "department" DEBE extraerse EXCLUSIVAMENTE del análisis del JSON de mapeo de departamentos proporcionado arriba:
-   - Analiza el JSON para identificar qué categoría/subcategoría corresponde a la solicitud
-   - Luego determina el department genérico según el departamento real al que mapea en el JSON
-   - Si NO encuentras correspondencia en el JSON → department="general"
-
-3. El campo "channel" DEBE ser EXACTAMENTE el nombre del departamento real que aparece en el JSON para esa categoría/subcategoría
-   - Si no encuentras correspondencia → channel="DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
-
-{department_section}
-
-FORMATO DE RESPUESTA:
-- Responde SOLO con el JSON válido
-- NO incluyas markdown (```json o ```)
-- NO incluyas texto explicativo antes o después del JSON
-- El JSON debe ser válido y parseable directamente"""
-
-    try:
-        response = llm.invoke(prompt)
-        content = response.content.strip()
-        
-        # Limpiar markdown si existe
-        if content.startswith("```json"):
-            content = content.replace("```json", "").replace("```", "").strip()
-        elif content.startswith("```"):
-            content = content.replace("```", "").strip()
-        
-        # Intentar parsear JSON
-        try:
-            result = json.loads(content)
-        except json.JSONDecodeError as e:
-            print(f"⚠️ [Handoff] Error parseando JSON del LLM: {e}")
-            print(f"   Contenido recibido: {content[:200]}")
-            # Intentar extraer JSON si está dentro de texto
-            import re
-            json_match = re.search(r'\{[^{}]*"answer_type"[^{}]*\}', content, re.DOTALL)
-            if json_match:
-                try:
-                    result = json.loads(json_match.group(0))
-                except:
-                    result = {"answer_type": "informativo", "department": "general", "channel": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"}
-            else:
-                result = {"answer_type": "informativo", "department": "general", "channel": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"}
-        
-        # Validar campos
-        if "answer_type" not in result:
-            result["answer_type"] = "informativo"
-        
-        # Validar campos del LLM
-        # El LLM determina department y channel analizando el JSON de departamentos
-        if "department" not in result:
-            result["department"] = "general"
-        if "channel" not in result:
-            # Si el LLM no retornó channel, usar mapeo como fallback
-            result["channel"] = get_departamento_real(category or "", subcategory or "", result.get("department"), user_text)
+    # 1) Determinar answer_type (ya viene del LLM en V3, pero validamos)
+    answer_type = intent.get("answer_type", "informativo")
+    if answer_type not in ("informativo", "operativo"):
+        # Heurística basada en acción
+        if accion in {"cambiar", "modificar", "anular", "inscribir", "homologar", "rectificar", "pagar", "solicitar", "recalificar", "convalidar"}:
+            answer_type = "operativo"
         else:
-            # Validar que el channel del LLM es uno de los departamentos reales
-            channel = result["channel"]
-            channel_normalized = channel.upper().strip()
-            dept_found = None
-            for dept in DEPARTAMENTOS_REALES:
-                if dept.upper().strip() == channel_normalized:
-                    dept_found = dept
-                    break
-            
-            if dept_found:
-                result["channel"] = dept_found
-            else:
-                # Si no coincide exactamente, usar función de mapeo como fallback
-                result["channel"] = get_departamento_real(category or "", subcategory or "", result.get("department"), user_text)
-                print(f"⚠️ Canal '{channel}' no coincide con departamentos reales, usando mapeo: '{result['channel']}'")
-        
-        print(f"🤖 [LLM Classification]")
-        print(f"   Type: {result['answer_type']}")
-        print(f"   Department: {result['department']}")
-        print(f"   Channel: {result['channel']}")
-        print(f"   Reasoning: {result.get('reasoning', 'N/A')}")
-        
-        return result
-        
-    except Exception as e:
-        print(f"⚠️ Error en clasificación LLM: {e}")
-        # Fallback a clasificación por keywords (método anterior)
-        fallback_dept = "general"
-        fallback_cat = "Consultas varias"
-        fallback_sub = "Consultas varias"
-        
-        fallback_result = {
-            "answer_type": _classify_answer_type_fallback(intent_short, slots, user_text),
-            "department": fallback_dept,
-            "channel": get_departamento_real(fallback_cat, fallback_sub, fallback_dept, user_text),
-            "reasoning": "Clasificación por fallback"
+            answer_type = "informativo"
+    
+    # 2) Determinar department/channel desde handoff_config.json
+    department = "general"
+    channel = "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
+    
+    # Mapeo por palabras clave comunes en el texto
+    texto_completo = f"{texto} {objeto} {accion}".lower()
+    
+    # Mapeo directo por keywords del mapeo_por_intencion
+    mapeo_intencion = get_handoff_config().get("mapeo_por_intencion", {})
+    for keyword, dept_real in mapeo_intencion.items():
+        if keyword.lower() in texto_completo:
+            channel = dept_real
+            department = get_department_from_channel(channel)
+            return {
+                "answer_type": answer_type,
+                "department": department,
+                "channel": channel,
+                "reasoning": f"Clasificado por keyword '{keyword}'"
+            }
+    
+    # Mapeo por objeto/acción específicos usando el JSON de categorías
+    mapeo_cat_sub = get_mapeo_categoria_subcategoria()
+    
+    # Casos comunes: cambio de paralelo
+    if "paralelo" in texto_completo:
+        categoria = "Academico"
+        subcategoria = "Cambio de paralelo"
+        if categoria in mapeo_cat_sub and subcategoria in mapeo_cat_sub[categoria]:
+            channel = mapeo_cat_sub[categoria][subcategoria]
+            department = get_department_from_channel(channel)
+            return {
+                "answer_type": answer_type,
+                "department": department,
+                "channel": channel,
+                "reasoning": "Clasificado por cambio de paralelo"
+            }
+    
+    # Casos comunes: beca estudiantil
+    if "beca" in texto_completo:
+        categoria = "Bienestar estudiantil"
+        subcategoria = "Beca estudiantil"
+        if categoria in mapeo_cat_sub and subcategoria in mapeo_cat_sub[categoria]:
+            channel = mapeo_cat_sub[categoria][subcategoria]
+            department = get_department_from_channel(channel)
+            return {
+                "answer_type": answer_type,
+                "department": department,
+                "channel": channel,
+                "reasoning": "Clasificado por beca estudiantil"
+            }
+    
+    # Casos comunes: pago/financiero
+    if any(kw in texto_completo for kw in ["pago", "pagos", "arancel", "financiero", "valores a cancelar"]):
+        categoria = "Financiero"
+        subcategoria = "Valores a cancelar"
+        if categoria in mapeo_cat_sub and subcategoria in mapeo_cat_sub[categoria]:
+            channel = mapeo_cat_sub[categoria][subcategoria]
+            department = get_department_from_channel(channel)
+            return {
+                "answer_type": answer_type,
+                "department": department,
+                "channel": channel,
+                "reasoning": "Clasificado por tema financiero"
+            }
+    
+    # Casos comunes: biblioteca/libro/préstamo
+    if any(kw in texto_completo for kw in ["biblioteca", "libro", "préstamo", "prestamo"]):
+        categoria = "Idiomas/ofimatica"
+        subcategoria = "Servicio de biblioteca física y digital"
+        if categoria in mapeo_cat_sub and subcategoria in mapeo_cat_sub[categoria]:
+            channel = mapeo_cat_sub[categoria][subcategoria]
+            department = get_department_from_channel(channel)
+            return {
+                "answer_type": answer_type,
+                "department": department,
+                "channel": channel,
+                "reasoning": "Clasificado por biblioteca"
+            }
+    
+    # Casos comunes: prácticas/vinculación
+    if any(kw in texto_completo for kw in ["practica", "práctica", "vinculación", "vinculacion", "preprofesional"]):
+        categoria = "Vinculación"
+        subcategoria = "Practicas preprofesionales"
+        if categoria in mapeo_cat_sub and subcategoria in mapeo_cat_sub[categoria]:
+            channel = mapeo_cat_sub[categoria][subcategoria]
+            department = get_department_from_channel(channel)
+            return {
+                "answer_type": answer_type,
+                "department": department,
+                "channel": channel,
+                "reasoning": "Clasificado por vinculación"
+            }
+    
+    # Casos comunes: matriculación
+    if any(kw in texto_completo for kw in ["matricula", "matriculación", "matricular"]):
+        categoria = "Academico"
+        subcategoria = "Matriculación"
+        if categoria in mapeo_cat_sub and subcategoria in mapeo_cat_sub[categoria]:
+            channel = mapeo_cat_sub[categoria][subcategoria]
+            department = get_department_from_channel(channel)
+            return {
+                "answer_type": answer_type,
+                "department": department,
+                "channel": channel,
+                "reasoning": "Clasificado por matriculación"
+            }
+    
+    # Casos comunes: SGA/plataforma/TIC
+    if any(kw in texto_completo for kw in ["sga", "plataforma", "correo", "contraseña", "clave", "acceso", "tic"]):
+        channel = "DIRECCIÓN DE TECNOLOGÍA DE LA INFORMACIÓN Y COMUNICACIONES"
+        department = get_department_from_channel(channel)
+        return {
+            "answer_type": answer_type,
+            "department": department,
+            "channel": channel,
+            "reasoning": "Clasificado por tema TIC"
         }
-        return fallback_result
+    
+    # Default: académico
+    return {
+        "answer_type": answer_type,
+        "department": department,
+        "channel": channel,
+        "reasoning": "Clasificado por defecto (general)"
+    }
 
 
 def _classify_answer_type_fallback(
@@ -493,36 +469,13 @@ def _classify_answer_type_fallback(
     user_text: str = ""
 ) -> str:
     """
-    Clasificación del tipo de respuesta usando LLM.
-    Si el LLM falla, usa heurísticas simples basadas en estructura (sin keywords).
+    Clasificación del tipo de respuesta usando heurísticas simples basadas en estructura.
     """
-    # Intentar usar LLM primero si está disponible
-    try:
-        from .config import ALLOW_HANDOFF_LLM, llm_budget_remaining
-        if ALLOW_HANDOFF_LLM and llm_budget_remaining() > 0:
-            llm_result = classify_with_llm(
-                user_text=user_text or intent_short,
-                intent_short=intent_short,
-                category=None,
-                subcategory=None,
-                slots=slots
-            )
-            answer_type = llm_result.get("answer_type", "")
-            # Normalizar: mapear "procedimental" a "informativo" (ya no se usa "procedimental")
-            if answer_type == "procedimental":
-                answer_type = "informativo"
-            if answer_type in ("informativo", "operativo"):
-                return answer_type
-    except Exception as e:
-        print(f"⚠️ [Handoff] Error usando LLM para clasificar answer_type: {e}")
-    
-    # Fallback sin keywords: usar heurísticas estructurales
     # Si la intención está en CRITICAL_INTENTS, es operativo
     if intent_short in CRITICAL_INTENTS:
         return "operativo"
     
     # Heurística simple: si la acción implica un cambio de estado o acción concreta
-    # basado en la estructura del texto, no en keywords específicas
     accion = slots.get("accion", "").lower() if slots else ""
     objeto = slots.get("objeto", "").lower() if slots else ""
     
@@ -550,7 +503,7 @@ def should_handoff(
 ) -> Dict[str, Any]:
     """
     Decide si se debe ofrecer escalamiento a agente humano.
-    Usa LLM para clasificar inteligentemente la solicitud y determinar el canal correcto.
+    Usa heurísticas para clasificar la solicitud y determinar el canal correcto.
     
     Args:
         confidence: Score de confianza (0.0-1.0)
@@ -614,29 +567,15 @@ def should_handoff(
             if "operativo_requiere_validacion" not in reasons:
                 reasons.append("operativo_requiere_validacion")
     
-    # Antes de decidir, ver si es necesario invocar LLM según señales duras
-    if user_text:
-        should_call_llm = False
-        if confidence < TAU_MIN:
-            should_call_llm = True
-        if TAU_MIN <= confidence < TAU_NORMA and intent_short in CRITICAL_INTENTS:
-            should_call_llm = True
-        if missing_docs:
-            should_call_llm = True
-        if followups >= 2 and confidence < TAU_NORMA:
-            should_call_llm = True
-        # Aplicar gating global: bandera y presupuesto de tokens
-        if should_call_llm and ALLOW_HANDOFF_LLM and llm_budget_remaining() >= 1:
-            llm_classification = classify_with_llm(
-                user_text, intent_short, category, subcategory, slots
-            )
-            answer_type = llm_classification.get("answer_type", answer_type)
-            # Normalizar: mapear "procedimental" a "informativo" (ya no se usa "procedimental")
-            if answer_type == "procedimental":
-                answer_type = "informativo"
-            channel_llm = llm_classification.get("channel")
-            # El LLM determina department analizando el JSON de departamentos y la consulta del usuario
-            department = llm_classification.get("department", "general")
+    # Usar classify_with_heuristics para determinar department y channel (sin LLM)
+    if user_text and slots:
+        try:
+            heuristic_classification = classify_with_heuristics(slots)
+            answer_type = heuristic_classification.get("answer_type", answer_type)
+            channel_llm = heuristic_classification.get("channel")
+            department = heuristic_classification.get("department", "general")
+        except Exception as e:
+            print(f"⚠️ [Handoff] Error en clasificación heurística: {e}")
 
     # Decisión final
     handoff = len(reasons) > 0
