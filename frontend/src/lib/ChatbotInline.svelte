@@ -21,6 +21,8 @@
   let thinkingInterval = null; // Intervalo para actualizar el estado dinámico
   let thinkingKey = 0; // Key para forzar re-render y animación suave
   let showingDelayedMessage = false; // Flag para indicar que se está mostrando un mensaje con delay
+  let showMultiReqMenu = false; // Flag para mostrar menú de multi-requirement
+  let multiReqOptions = []; // Opciones del menú de multi-requirement
   
   // Constantes para delays
   const GREETING_DELAY = 600; // 600ms para saludos
@@ -366,6 +368,14 @@
     stopThinkingStatusUpdate();
   }
   
+  // Función para manejar clics en botones de multi-requirement
+  async function handleMultiReqClick(action) {
+    showMultiReqMenu = false;
+    
+    // Enviar acción de control sin texto real (usar carácter especial)
+    await processMessage("⎈", action);
+  }
+  
   // Función para interpretar intención - solo muestra "Entendiendo el requerimiento del usuario"
   function startIntentParsing() {
     thinkingKey += 1; // Forzar re-render para animación suave
@@ -413,7 +423,7 @@
     }
   }
 
-  async function processMessage(text) {
+  async function processMessage(text, controlAction = null) {
     
     try {
       const history = formatHistoryForBackend();
@@ -444,6 +454,9 @@
         if (profileId) {
           formData.append("perfil_id", profileId);
         }
+        if (controlAction) {
+          formData.append("control_action", controlAction);
+        }
         
         body = formData;
         // No establecer Content-Type, el navegador lo hace automáticamente con el boundary
@@ -465,6 +478,9 @@
         
         if (profileType) {
           requestBody.profile_type = profileType;
+        }
+        if (controlAction) {
+          requestBody.control_action = controlAction;
         }
         
         headers["Content-Type"] = "application/json";
@@ -574,6 +590,15 @@
       } else if (data.confirmed === false) {
         currentCategory = null;
         currentSubcategory = null;
+      }
+      
+      // Detectar menú de multi-requirement
+      if (data.extra?.ui_next_step === "multi_requirement_menu") {
+        showMultiReqMenu = true;
+        multiReqOptions = data.extra.multi_requirement_options || [];
+      } else {
+        showMultiReqMenu = false;
+        multiReqOptions = [];
       }
     } catch(e) {
       if (e.name === 'AbortError') return;
@@ -856,6 +881,24 @@
                   {pdfPath.split('/').pop().replace('.pdf', '').replace(/_/g, ' ')}
                 </a>
               {/each}
+            </div>
+          {/if}
+          
+          {#if m.who === "bot" && idx === messages.length - 1 && showMultiReqMenu && multiReqOptions.length > 0}
+            <!-- Menú de multi-requirement -->
+            <div class="multi-req-menu">
+              <div class="multi-req-intro">¿Qué quieres hacer ahora?</div>
+              <div class="multi-req-buttons">
+                {#each multiReqOptions as option}
+                  <button 
+                    class="multi-req-btn"
+                    on:click={() => handleMultiReqClick(option.id)}
+                    disabled={sending}
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+              </div>
             </div>
           {/if}
         </div>
@@ -1907,6 +1950,65 @@
   color: #0f2136;
   cursor: pointer;
   font-weight: 600;
+}
+
+/* Menú de multi-requirement */
+.multi-req-menu{
+  margin-top: 16px;
+  padding: 16px;
+  background: #f8f9fa;
+  border: 1px solid #e4e7ee;
+  border-radius: 12px;
+  animation: buttonsSlideIn 0.4s ease-out;
+}
+
+.multi-req-intro{
+  font-size: 0.95rem;
+  color: #0f2136;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.multi-req-buttons{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.multi-req-btn{
+  padding: 12px 16px;
+  background: white;
+  border: 2px solid #1b66d1;
+  border-radius: 8px;
+  color: #1b66d1;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: center;
+}
+
+.multi-req-btn:hover:not(:disabled){
+  background: #1b66d1;
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(27, 102, 209, 0.2);
+}
+
+.multi-req-btn:disabled{
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@keyframes buttonsSlideIn{
+  from{
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to{
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .file-input{
   display: none;

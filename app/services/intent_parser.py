@@ -26,7 +26,29 @@ Eres un extractor de intención. Devuelve SOLO un JSON válido con esta estructu
   "original_user_message": "<mensaje original del usuario tal cual>",
   "needs_confirmation": <true o false>,
   "confirm_text": "<texto corto de confirmación en español, listo para mostrar al usuario>",
-  "answer_type": "<informativo o operativo>"
+  "answer_type": "<informativo o operativo>",
+  "multi_intent": <true o false>,
+  "intents": [
+    {
+      "id": "req_1",
+      "intent_short": "<12-16 palabras, concreta y accionable>",
+      "intent_code": "<uno de: consultar_solicitudes_balcon | consultar_datos_personales | consultar_carrera_actual | consultar_roles_usuario | otro>",
+      "accion": "<verbo principal en infinitivo>",
+      "objeto": "<qué cosa sobre la que recae la acción>",
+      "asignatura": "<si aplica>",
+      "unidad_o_actividad": "<si aplica>",
+      "periodo": "<si aplica>",
+      "carrera": "<si aplica>",
+      "facultad": "<si aplica>",
+      "modalidad": "<si aplica>",
+      "sistema": "<si aplica>",
+      "problema": "<si aplica>",
+      "detalle_libre": "<detalles útiles>",
+      "answer_type": "<informativo o operativo>",
+      "needs_confirmation": <true o false>,
+      "confirm_text": "<texto de confirmación>"
+    }
+  ]
 }
 
 Reglas para intent_code:
@@ -56,6 +78,22 @@ Reglas para answer_type:
   Ejemplos: "¿Cuáles son los requisitos para matricularme?", "¿Qué horarios tiene la biblioteca?", "¿Cómo puedo ver mis notas?"
 - "operativo": Cambios de estado o trámites que requieren acción humana: cambiar, anular, inscribir, homologar, recalificar, convalidar, pagar, solicitar certificados, etc.
   Ejemplos: "Quiero cambiar de paralelo", "Necesito anular mi matrícula", "Quiero solicitar una beca"
+
+Reglas para multi_intent e intents:
+- Además, debes detectar si el mensaje del usuario contiene MÁS DE UN requerimiento independiente.
+- Considera requerimiento independiente cuando el usuario pide cosas que se tramitarían por separado.
+  Ejemplos:
+  - "Quiero un certificado de matrícula Y también cambiar de paralelo"
+  - "Necesito saber los requisitos para la beca Y cómo puedo apelar una nota"
+- Si hay varios, NUNCA mezcles todo en un solo intent_short.
+- En ese caso:
+  - Establece multi_intent = true.
+  - Llena la lista "intents" con UN OBJETO POR CADA requerimiento.
+  - El primer elemento de "intents" es el requerimiento principal (req_1).
+  - Copia el requerimiento principal a los campos raíz (intent_short, accion, objeto, answer_type, etc.) para compatibilidad.
+- Si solo hay un requerimiento:
+  - multi_intent = false
+  - "intents" tiene exactamente un elemento (req_1) con todos los campos completos.
 
 Reglas generales:
 - No inventes: si un campo no está, pon "" (string vacío) o false según corresponda.
@@ -104,6 +142,73 @@ def interpretar_intencion_principal(texto_usuario: str) -> dict:
             "detalle_libre": texto_usuario.strip()[:160]
         }
     
+    # Normalizar multi_intent e intents
+    multi_intent = bool(data.get("multi_intent", False))
+    intents_list = data.get("intents") or []
+    
+    # Compatibilidad: si no hay "intents", creamos uno a partir del intent principal
+    if not intents_list:
+        intents_list = [{
+            "id": "req_1",
+            "intent_short": data.get("intent_short", ""),
+            "intent_code": data.get("intent_code", ""),
+            "accion": data.get("accion", ""),
+            "objeto": data.get("objeto", ""),
+            "asignatura": data.get("asignatura", ""),
+            "unidad_o_actividad": data.get("unidad_o_actividad", ""),
+            "periodo": data.get("periodo", ""),
+            "carrera": data.get("carrera", ""),
+            "facultad": data.get("facultad", ""),
+            "modalidad": data.get("modalidad", ""),
+            "sistema": data.get("sistema", ""),
+            "problema": data.get("problema", ""),
+            "detalle_libre": data.get("detalle_libre", ""),
+            "answer_type": data.get("answer_type", "informativo"),
+            "needs_confirmation": data.get("needs_confirmation", False),
+            "confirm_text": data.get("confirm_text", "")
+        }]
+        multi_intent = False
+    
+    # Asegurar IDs y normalizar cada intent
+    for i, r in enumerate(intents_list, start=1):
+        r.setdefault("id", f"req_{i}")
+        
+        # Normalizar campos string en cada intent
+        intent_keys = [
+            "intent_short", "intent_code", "accion", "objeto", "asignatura", "unidad_o_actividad",
+            "periodo", "carrera", "facultad", "modalidad", "sistema", "problema", "detalle_libre", "confirm_text"
+        ]
+        for k in intent_keys:
+            r.setdefault(k, "")
+            if not isinstance(r.get(k), str):
+                r[k] = str(r.get(k) or "")
+        
+        # Normalizar needs_confirmation (bool)
+        nc = str(r.get("needs_confirmation", "")).strip().lower()
+        r["needs_confirmation"] = nc in ["true", "1", "sí", "si", "yes", "verdadero"]
+        
+        # Normalizar answer_type
+        answer = r.get("answer_type", "").strip().lower()
+        if answer not in ("informativo", "operativo"):
+            accion_lower = r.get("accion", "").lower()
+            if accion_lower in ["cambiar", "modificar", "anular", "inscribir", "homologar", "rectificar", "pagar", "solicitar", "recalificar", "convalidar"]:
+                answer = "operativo"
+            else:
+                answer = "informativo"
+        r["answer_type"] = answer
+        
+        # Si confirm_text está vacío pero needs_confirmation es True, generar uno básico
+        if r.get("needs_confirmation") and not r.get("confirm_text", "").strip():
+            intent_short = r.get("intent_short", "").strip()
+            if intent_short:
+                r["confirm_text"] = f"¿Te refieres a {intent_short.lower()}?"
+            else:
+                r["confirm_text"] = "¿Puedes confirmar tu solicitud?"
+    
+    # Actualizar data con multi_intent e intents normalizados
+    data["multi_intent"] = multi_intent
+    data["intents"] = intents_list
+    
     # Lista completa de keys (siempre incluye los nuevos campos)
     keys_base = [
         "intent_short", "intent_code", "accion", "objeto", "asignatura", "unidad_o_actividad",
@@ -111,7 +216,7 @@ def interpretar_intencion_principal(texto_usuario: str) -> dict:
         "original_user_message", "needs_confirmation", "confirm_text", "answer_type"
     ]
     
-    # Normalizar campos string
+    # Normalizar campos string en el nivel raíz (compatibilidad)
     for k in keys_base:
         if k == "needs_confirmation":  # Este es bool, no string
             continue
@@ -127,11 +232,11 @@ def interpretar_intencion_principal(texto_usuario: str) -> dict:
     if not data.get("intent_code") or data["intent_code"] == "":
         data["intent_code"] = "otro"
     
-    # Normalizar needs_confirmation (bool)
+    # Normalizar needs_confirmation (bool) en nivel raíz
     nc = str(data.get("needs_confirmation", "")).strip().lower()
     data["needs_confirmation"] = nc in ["true", "1", "sí", "si", "yes", "verdadero"]
     
-    # Normalizar answer_type
+    # Normalizar answer_type en nivel raíz
     answer = data.get("answer_type", "").strip().lower()
     if answer not in ("informativo", "operativo"):
         # Heurística: si la acción es operativa, es operativo

@@ -1347,6 +1347,258 @@ def _build_error_response(msg: str) -> dict:
     )
 
 
+def _is_requirement_complete(conversation_history: List[Dict]) -> bool:
+    """
+    Determina si el requerimiento actual está completo.
+    
+    Un requerimiento se considera completo cuando:
+    1. PrivateGPT respondió con has_information=True (respuesta informativa completa)
+    2. Se ejecutó la función para crear una solicitud en el JSON (handoff completado)
+    3. El usuario canceló o rechazó explícitamente
+    
+    Args:
+        conversation_history: Historial de la conversación
+        
+    Returns:
+        True si el requerimiento está completo, False si está en progreso
+    """
+    if not conversation_history:
+        return True  # Sin historial, no hay requerimiento activo
+    
+    # Buscar el último mensaje del bot
+    for msg in reversed(conversation_history):
+        role = msg.get("role") or msg.get("who")
+        if role in ("bot", "assistant"):
+            # Caso 1: Respuesta informativa completa (has_information=True)
+            if msg.get("has_information") == True:
+                meta = msg.get("meta") or {}
+                if isinstance(meta, dict) and meta.get("has_information") == True:
+                    return True
+                # Verificar si tiene fuentes (indica respuesta completa)
+                if msg.get("fuentes") or msg.get("source_pdfs"):
+                    return True
+                if isinstance(meta, dict) and (meta.get("fuentes") or meta.get("source_pdfs")):
+                    return True
+            
+            # Caso 2: Handoff completado (solicitud creada en JSON)
+            # Cuando handoff_sent=True, significa que la solicitud fue creada exitosamente
+            meta = msg.get("meta") or {}
+            if isinstance(meta, dict):
+                if meta.get("handoff_sent") == True:
+                    # Solicitud creada exitosamente → requerimiento completo
+                    return True
+            if msg.get("handoff_sent") == True:
+                # Solicitud creada exitosamente → requerimiento completo
+                return True
+            
+            # Caso 3: Respuesta de error o cancelación
+            if msg.get("status") == "error" or msg.get("stage") == "await_intent":
+                # Si el mensaje anterior del usuario fue una cancelación explícita
+                return True
+            
+            # Si el mensaje tiene stage=ANSWER_READY, el requerimiento está completo
+            if msg.get("stage") == ConversationStage.ANSWER_READY.value:
+                return True
+            
+            break
+    
+    return False
+
+
+def _is_new_intent(user_text: str, conversation_history: List[Dict]) -> bool:
+    """
+    Determina si el mensaje del usuario es un nuevo intento/requerimiento.
+    
+    Un mensaje se considera nuevo intento cuando:
+    1. No hay requerimiento activo (requerimiento anterior completado)
+    2. El mensaje no es una confirmación (sí/no)
+    3. El mensaje no es una respuesta a solicitudes relacionadas
+    4. El mensaje no es una continuación del flujo actual (handoff details, etc.)
+    5. El mensaje es suficientemente largo y diferente del contexto anterior
+    
+    Args:
+        user_text: Mensaje del usuario
+        conversation_history: Historial de la conversación
+        
+    Returns:
+        True si es un nuevo intento, False si es continuación del flujo actual
+    """
+    user_text_str = str(user_text) if user_text is not None else ""
+    user_text_lower = user_text_str.lower().strip()
+    
+    # Verificar si el requerimiento anterior está completo
+    if not _is_requirement_complete(conversation_history):
+        # Si hay un requerimiento activo, verificar si el mensaje es una continuación
+        # o un nuevo intento
+        
+        # No es nuevo si es una confirmación
+        if es_confirmacion_positiva(user_text) or es_confirmacion_negativa(user_text):
+            return False
+        
+        # No es nuevo si es respuesta a solicitudes relacionadas
+        no_related_keywords = ["no hay", "ninguna", "ninguna es relevante", "continuar sin relacionar", 
+                               "sin relacionar", "no hay solicitud relacionada"]
+        if any(keyword in user_text_lower for keyword in no_related_keywords):
+            return False
+        
+        # No es nuevo si contiene números (selección de solicitud relacionada)
+        if any(str(i) in user_text_str for i in range(1, 10)):
+            return False
+        
+        # Si el mensaje es muy largo (>50 caracteres) y el requerimiento anterior está completo,
+        # probablemente es un nuevo intento
+        if len(user_text_str) > 50:
+            # Verificar si el último mensaje del bot fue una respuesta completa
+            for msg in reversed(conversation_history):
+                role = msg.get("role") or msg.get("who")
+                if role in ("bot", "assistant"):
+                    # Si fue respuesta informativa completa, este es nuevo intento
+                    if msg.get("has_information") == True:
+                        return True
+                    if msg.get("fuentes") or msg.get("source_pdfs"):
+                        return True
+                    break
+        
+        return False
+    
+    # Si el requerimiento anterior está completo, este es un nuevo intento
+    # (a menos que sea una confirmación o respuesta específica)
+    
+    # No es nuevo si es una confirmación
+    if es_confirmacion_positiva(user_text) or es_confirmacion_negativa(user_text):
+        return False
+    
+    # No es nuevo si es respuesta a solicitudes relacionadas
+    no_related_keywords = ["no hay", "ninguna", "ninguna es relevante", "continuar sin relacionar", 
+                           "sin relacionar", "no hay solicitud relacionada"]
+    if any(keyword in user_text_lower for keyword in no_related_keywords):
+        return False
+    
+    # Si llegamos aquí, es un nuevo intento
+    return True
+
+
+def _should_reset_conversation_context(conversation_history: List[Dict]) -> bool:
+    """
+    Determina si debemos resetear el contexto de conversación.
+    
+    El contexto debe resetearse cuando:
+    1. El requerimiento actual está completo
+    2. No hay requerimientos pendientes en la cola
+    
+    Args:
+        conversation_history: Historial de la conversación
+        
+    Returns:
+        True si debemos resetear el contexto, False si debemos mantenerlo
+    """
+    # Verificar si el requerimiento está completo
+    if not _is_requirement_complete(conversation_history):
+        return False
+    
+    # Verificar si hay requerimientos pendientes en la cola
+    for msg in reversed(conversation_history):
+        role = msg.get("role") or msg.get("who")
+        if role in ("bot", "assistant"):
+            meta = msg.get("meta") or {}
+            extra = meta.get("extra") or {}
+            if isinstance(extra, dict):
+                requirements = extra.get("requirements", [])
+                if requirements:
+                    # Verificar si hay requerimientos pendientes
+                    pending = [r for r in requirements if r.get("status") == "pending"]
+                    if pending:
+                        return False  # Hay requerimientos pendientes, no resetear
+            break
+    
+    return True  # No hay requerimientos activos ni pendientes, resetear contexto
+
+
+def _finish_requirement_and_maybe_next(
+    base_response: dict,
+    requirements: list[dict],
+    current_index: int
+) -> dict:
+    """
+    Marca un requerimiento como terminado y ofrece opciones si hay más pendientes.
+    
+    Args:
+        base_response: Respuesta base que ya se construyó
+        requirements: Lista de requerimientos con status
+        current_index: Índice del requerimiento actual
+    
+    Returns:
+        Respuesta modificada con opciones de siguiente requerimiento
+    """
+    if not requirements or current_index >= len(requirements):
+        return base_response
+    
+    # 1) Marcar como terminado
+    requirements[current_index]["status"] = "done"
+    
+    remaining = [r for r in requirements if r["status"] == "pending"]
+    
+    # Asegurar que extra existe
+    if "extra" not in base_response:
+        base_response["extra"] = {}
+    
+    base_response["extra"]["requirements"] = requirements
+    base_response["extra"]["current_requirement_index"] = current_index
+    
+    # También guardar en meta para que el frontend pueda encontrarlo en el historial
+    if "meta" not in base_response:
+        base_response["meta"] = {}
+    if "extra" not in base_response["meta"]:
+        base_response["meta"]["extra"] = {}
+    base_response["meta"]["extra"]["requirements"] = requirements
+    base_response["meta"]["extra"]["current_requirement_index"] = current_index
+    
+    if not remaining:
+        # No hay más requerimientos pendientes → conversación normal
+        base_response["extra"]["has_more_requirements"] = False
+        base_response["meta"]["extra"]["has_more_requirements"] = False
+        return base_response
+    
+    next_req = remaining[0]
+    base_response["extra"]["has_more_requirements"] = True
+    base_response["extra"]["next_requirement_id"] = next_req["id"]
+    base_response["extra"]["ui_next_step"] = "multi_requirement_menu"
+    base_response["extra"]["multi_requirement_options"] = [
+        {
+            "id": "continue_current",
+            "label": "Seguir con este mismo tema"
+        },
+        {
+            "id": "go_next_requirement",
+            "label": "Pasar al siguiente requerimiento"
+        },
+        {
+            "id": "new_requirement",
+            "label": "Empezar un requerimiento nuevo"
+        }
+    ]
+    
+    # También guardar en meta
+    base_response["meta"]["extra"]["has_more_requirements"] = True
+    base_response["meta"]["extra"]["next_requirement_id"] = next_req["id"]
+    base_response["meta"]["extra"]["ui_next_step"] = "multi_requirement_menu"
+    base_response["meta"]["extra"]["multi_requirement_options"] = base_response["extra"]["multi_requirement_options"]
+    
+    # Mensaje que se verá en el chat (encadenado al que ya generaste)
+    next_summary = next_req.get("summary", "otro requerimiento")
+    base_response["message"] += (
+        f"\n\nAdemás, en tu mensaje también mencionaste otro requerimiento:"
+        f" **{next_summary}**.\n\n"
+        "¿Qué quieres hacer ahora?"
+    )
+    
+    # Para compatibilidad, response = message si no hay algo distinto
+    if not base_response.get("response"):
+        base_response["response"] = base_response["message"]
+    
+    return base_response
+
+
 def _build_handoff_response(
     depto: str,
     student_data: Optional[Dict],
@@ -1389,20 +1641,37 @@ def _handle_confirmation_stage(
     category: Optional[str],
     subcategory: Optional[str],
     student_data: Optional[Dict],
-    perfil_id: Optional[str] = None
+    perfil_id: Optional[str] = None,
+    requirements: Optional[List[Dict]] = None,
+    current_req_index: int = 0
 ) -> Dict[str, Any]:
     """Maneja la etapa de confirmación cuando el usuario confirma."""
     intent_slots = _recover_intent_slots(conversation_history, pending_slots)
+    
+    # Recuperar requirements desde el historial si no se pasaron
+    if requirements is None:
+        requirements = []
+        for msg in reversed(conversation_history):
+            role = msg.get("role") or msg.get("who")
+            if role in ("bot", "assistant"):
+                meta = msg.get("meta") or {}
+                extra = meta.get("extra") or {}
+                if isinstance(extra, dict) and extra.get("requirements"):
+                    requirements = extra.get("requirements", [])
+                    current_req_index = extra.get("current_requirement_index", 0)
+                    break
     
     if not intent_slots:
         return {
             "category": None,
             "subcategory": None,
             "confidence": 0.0,
-            "summary": "No pude recuperar la intención confirmada. Dime de nuevo tu requerimiento, por favor.",
+            "summary": "⚠️ No puedo procesar tu solicitud en este momento. Por favor, intenta nuevamente o ingresa tu solicitud manualmente a través del formulario del Balcón de Servicios.",
+            "message": "⚠️ No puedo procesar tu solicitud en este momento. Por favor, intenta nuevamente o ingresa tu solicitud manualmente a través del formulario del Balcón de Servicios.",
             "campos_requeridos": [],
             "needs_confirmation": False,
-            "confirmed": None
+            "confirmed": None,
+            "has_information": False,
         }
     
     original_user_request = _recover_original_user_request(intent_slots, conversation_history, user_text)
@@ -1468,7 +1737,7 @@ def _handle_confirmation_stage(
                         f"{mensaje_inicio}He encontrado {len(related_requests)} solicitud(es) relacionada(s) con tu requerimiento:"
                     )
                     
-                    return {
+                    response = {
                         "summary": user_message,
                         "category": category,
                         "subcategory": subcategory,
@@ -1484,6 +1753,15 @@ def _handle_confirmation_stage(
                         "fuentes": [],
                         "has_information": False
                     }
+                    
+                    # Incluir requirements en extra si están disponibles
+                    if requirements:
+                        if "extra" not in response:
+                            response["extra"] = {}
+                        response["extra"]["requirements"] = requirements
+                        response["extra"]["current_requirement_index"] = current_req_index
+                    
+                    return response
             except Exception as e:
                 print(f"⚠️ [Handoff] Error al buscar solicitudes relacionadas: {e}")
                 import traceback
@@ -1528,11 +1806,13 @@ def _handle_confirmation_stage(
                     user_message += f"{i}. {req.get('display', req.get('id', 'Solicitud'))}\n"
                 user_message += "\n¿Deseas relacionar tu solicitud con alguna de estas? Si ninguna es relevante, puedes continuar sin relacionar."
             
-            return {
+            response = {
                 "category": category,
                 "subcategory": subcategory,
                 "confidence": 0.85,
                 "summary": user_message,
+                "message": user_message,
+                "response": user_message,
                 "campos_requeridos": [],
                 "needs_confirmation": False,
                 "needs_related_request_selection": True,
@@ -1540,8 +1820,13 @@ def _handle_confirmation_stage(
                 "no_related_request_option": True,
                 "confirmed": True,
                 "intent_slots": intent_slots,
-                "reasoning": related_requests_result.get("reasoning", "")
+                "reasoning": related_requests_result.get("reasoning", ""),
+                "extra": {}
             }
+            # Incluir requirements en el extra
+            response["extra"]["requirements"] = requirements
+            response["extra"]["current_requirement_index"] = current_req_index
+            return response
         elif hay_solicitudes_previas and no_related:
             user_message = related_requests_result.get("user_message", "")
             if not user_message:
@@ -1549,11 +1834,13 @@ def _handle_confirmation_stage(
                 mensaje_inicio = f"{primer_nombre}, " if primer_nombre else ""
                 user_message = f"{mensaje_inicio}No he encontrado solicitudes relacionadas con tu requerimiento.\n\n¿Deseas continuar sin relacionar tu solicitud con ninguna solicitud previa?"
             
-            return {
+            response = {
                 "category": category,
                 "subcategory": subcategory,
                 "confidence": 0.85,
                 "summary": user_message,
+                "message": user_message,
+                "response": user_message,
                 "campos_requeridos": [],
                 "needs_confirmation": False,
                 "needs_related_request_selection": True,
@@ -1561,8 +1848,13 @@ def _handle_confirmation_stage(
                 "no_related_request_option": True,
                 "confirmed": True,
                 "intent_slots": intent_slots,
-                "reasoning": related_requests_result.get("reasoning", "No hay solicitudes relacionadas")
+                "reasoning": related_requests_result.get("reasoning", "No hay solicitudes relacionadas"),
+                "extra": {}
             }
+            # Incluir requirements en el extra
+            response["extra"]["requirements"] = requirements
+            response["extra"]["current_requirement_index"] = current_req_index
+            return response
         
         # Si no hay solicitudes relacionadas o el usuario las rechazó, llamar a PrivateGPT
         try:
@@ -1585,13 +1877,28 @@ def _handle_confirmation_stage(
         fuentes = privategpt_result.get("fuentes", [])
         
         if has_information:
-            return _build_informative_answer_response(
+            # Recuperar requirements desde el historial
+            requirements_resp = []
+            current_req_index_resp = 0
+            for msg in reversed(conversation_history):
+                role = msg.get("role") or msg.get("who")
+                if role in ("bot", "assistant"):
+                    meta = msg.get("meta") or {}
+                    extra = meta.get("extra") or {}
+                    if isinstance(extra, dict) and extra.get("requirements"):
+                        requirements_resp = extra.get("requirements", [])
+                        current_req_index_resp = extra.get("current_requirement_index", 0)
+                        break
+            
+            response = _build_informative_answer_response(
                 resumen=response_text,
                 fuentes=fuentes,
                 intent_slots=intent_slots,
                 category=category,
                 subcategory=subcategory
             )
+            # Finalizar requerimiento y ofrecer siguiente si hay más
+            return _finish_requirement_and_maybe_next(response, requirements_resp, current_req_index_resp)
         else:
             # No hay información, hacer handoff
             depto = _determinar_departamento_handoff(
@@ -1667,7 +1974,8 @@ def classify_with_privategpt(
     subcategory: str = None,
     student_data: Dict = None,
     uploaded_file: Any = None,
-    perfil_id: str = None
+    perfil_id: str = None,
+    control_action: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Clasificador principal con flujo restaurado.
@@ -1701,6 +2009,80 @@ def classify_with_privategpt(
     
     conversation_history = conversation_history or []
     
+    # 0. Manejar control_action (acciones sin LLM)
+    if control_action:
+        # Recuperar requirements desde el último mensaje del bot
+        requirements = []
+        current_req_index = 0
+        
+        for msg in reversed(conversation_history):
+            role = msg.get("role") or msg.get("who")
+            if role in ("bot", "assistant"):
+                meta = msg.get("meta") or {}
+                extra = meta.get("extra") or {}
+                if isinstance(extra, dict) and extra.get("requirements"):
+                    requirements = extra.get("requirements", [])
+                    current_req_index = extra.get("current_requirement_index", 0)
+                    break
+        
+        if control_action == "go_next_requirement":
+            # Mover al siguiente requerimiento pendiente
+            remaining_indices = [i for i, r in enumerate(requirements) if r.get("status") == "pending"]
+            if remaining_indices:
+                # Encontrar el siguiente índice después del actual
+                next_indices = [i for i in remaining_indices if i > current_req_index]
+                if next_indices:
+                    current_req_index = next_indices[0]
+                    next_req = requirements[current_req_index]
+                    # Usar los slots del siguiente requerimiento directamente
+                    intent_slots = next_req.get("slots", {})
+                    # Proceder directamente con el flujo usando estos slots
+                    # Saltar interpretación de intención ya que tenemos los slots
+                    return _handle_confirmation_stage(
+                        user_text="",  # No hay texto nuevo, solo usar los slots
+                        pending_slots=intent_slots,
+                        conversation_history=conversation_history,
+                        category=category,
+                        subcategory=subcategory,
+                        student_data=student_data,
+                        perfil_id=perfil_id,
+                        requirements=requirements,
+                        current_req_index=current_req_index
+                    )
+            # No hay más requerimientos pendientes
+            return _build_frontend_response(
+                stage=ConversationStage.AWAIT_INTENT,
+                mode=ConversationMode.INFORMATIVE,
+                status=ConversationStatus.ANSWER,
+                message="No hay más requerimientos pendientes. ¿En qué más puedo ayudarte?",
+                has_information=False,
+                extra={"has_more_requirements": False}
+            )
+        elif control_action == "new_requirement":
+            # Limpiar cola y resetear
+            requirements = []
+            current_req_index = 0
+            # Continuar como mensaje nuevo normal (el user_text se procesará normalmente)
+        elif control_action == "continue_current":
+            # Mantener el requerimiento actual activo
+            # El siguiente mensaje del usuario se tratará como follow-up normal
+            # No hacer nada especial, solo continuar con el flujo normal
+            pass
+    
+    # Recuperar requirements desde el historial si existen
+    requirements = []
+    current_req_index = 0
+    
+    for msg in reversed(conversation_history):
+        role = msg.get("role") or msg.get("who")
+        if role in ("bot", "assistant"):
+            meta = msg.get("meta") or {}
+            extra = meta.get("extra") or {}
+            if isinstance(extra, dict) and extra.get("requirements"):
+                requirements = extra.get("requirements", [])
+                current_req_index = extra.get("current_requirement_index", 0)
+                break
+    
     # 1. Procesar archivo subido si existe
     if uploaded_file:
         try:
@@ -1724,11 +2106,112 @@ def classify_with_privategpt(
     
     # 2. Verificar primero si el mensaje es una confirmación (antes de detectar stage)
     # Esto es importante porque "si" puede ser malinterpretado como nueva intención
-    is_confirmation_positive = es_confirmacion_positiva(user_text)
-    is_confirmation_negative = es_confirmacion_negativa(user_text)
+    # PERO primero verificar si estamos en stage de selección de solicitudes relacionadas
+    # porque "no hay solicitud relacionada" NO es una confirmación negativa
+    
+    # Detectar stage primero para evitar falsos positivos
+    stage_temp, _, _ = _detect_stage_from_history(conversation_history)
+    
+    # Si estamos en stage de selección de solicitudes relacionadas, NO tratar como confirmación
+    if stage_temp == ConversationStage.AWAIT_RELATED_REQUEST.value:
+        # Verificar si el usuario dice "no hay solicitud relacionada" o similar
+        user_text_lower = str(user_text).lower().strip()
+        no_related_keywords = ["no hay", "ninguna", "ninguna es relevante", "continuar sin relacionar", 
+                               "sin relacionar", "no hay solicitud relacionada", "ninguna es", "ninguna solicitud"]
+        user_said_no_related = any(keyword in user_text_lower for keyword in no_related_keywords)
+        
+        if user_said_no_related:
+            # NO es una confirmación, es una respuesta a la pregunta de solicitudes relacionadas
+            # Continuar con el flujo normal sin tratar como confirmación
+            is_confirmation_positive = False
+            is_confirmation_negative = False
+        else:
+            # Puede ser una confirmación normal
+            is_confirmation_positive = es_confirmacion_positiva(user_text)
+            is_confirmation_negative = es_confirmacion_negativa(user_text)
+    else:
+        # Verificar confirmaciones normalmente
+        is_confirmation_positive = es_confirmacion_positiva(user_text)
+        is_confirmation_negative = es_confirmacion_negativa(user_text)
     
     # Si es una confirmación, buscar en el historial si hay un mensaje del bot con needs_confirmation
     if is_confirmation_positive or is_confirmation_negative:
+        # PRIMERO verificar si es confirmación de múltiples requerimientos
+        is_multi_req_check = False
+        requirements_check = []
+        current_req_index_check = 0
+        for msg_check in reversed(conversation_history):
+            role_check = msg_check.get("role") or msg_check.get("who")
+            if role_check in ("bot", "assistant"):
+                meta_check = msg_check.get("meta") or {}
+                extra_check = meta_check.get("extra") or {}
+                if isinstance(extra_check, dict):
+                    if extra_check.get("is_multi_req_confirmation"):
+                        is_multi_req_check = True
+                    if extra_check.get("requirements"):
+                        requirements_check = extra_check.get("requirements", [])
+                        current_req_index_check = extra_check.get("current_requirement_index", 0)
+                        if is_multi_req_check:
+                            break
+        
+        # Si es confirmación de múltiples requerimientos, manejar aquí
+        if is_multi_req_check and requirements_check:
+            if is_confirmation_positive:
+                # Usuario dijo "sí" a "¿te parece?" → mostrar confirmación del primer requerimiento
+                if current_req_index_check < len(requirements_check):
+                    first_req = requirements_check[current_req_index_check]
+                    first_req_slots = first_req.get("slots", {})
+                    confirm_text_first = first_req_slots.get("confirm_text", "").strip()
+                    if not confirm_text_first:
+                        confirm_text_first = _confirm_text_from_slots(first_req_slots)
+                    
+                    print(f"✅ [Multi-Req] Usuario confirmó '¿te parece?', mostrando confirmación del primer requerimiento")
+                    
+                    # Mostrar confirmación del primer requerimiento
+                    response = _build_need_confirm_response(
+                        confirm_text=confirm_text_first,
+                        intent_slots=first_req_slots,
+                        category=category,
+                        subcategory=subcategory
+                    )
+                    
+                    # Incluir requirements para mantener el contexto
+                    if "extra" not in response:
+                        response["extra"] = {}
+                    response["extra"]["requirements"] = requirements_check
+                    response["extra"]["current_requirement_index"] = current_req_index_check
+                    
+                    return response
+            elif is_confirmation_negative:
+                # Usuario dijo "no" a "¿te parece?" → pasar al segundo requerimiento
+                if len(requirements_check) > 1:
+                    next_index = 1  # Segundo requerimiento (índice 1)
+                    if next_index < len(requirements_check):
+                        second_req = requirements_check[next_index]
+                        second_req_slots = second_req.get("slots", {})
+                        confirm_text_second = second_req_slots.get("confirm_text", "").strip()
+                        if not confirm_text_second:
+                            confirm_text_second = _confirm_text_from_slots(second_req_slots)
+                        
+                        print(f"❌ [Multi-Req] Usuario rechazó '¿te parece?', pasando al segundo requerimiento")
+                        
+                        # Mostrar confirmación del segundo requerimiento
+                        response = _build_need_confirm_response(
+                            confirm_text=confirm_text_second,
+                            intent_slots=second_req_slots,
+                            category=category,
+                            subcategory=subcategory
+                        )
+                        
+                        # Incluir requirements actualizados
+                        if "extra" not in response:
+                            response["extra"] = {}
+                        response["extra"]["requirements"] = requirements_check
+                        response["extra"]["current_requirement_index"] = next_index
+                        
+                        return response
+        
+        # Si NO es confirmación de múltiples requerimientos, seguir con flujo normal
         history_list = list(conversation_history)
         for i in range(len(history_list) - 1, -1, -1):
             msg = history_list[i]
@@ -1754,12 +2237,70 @@ def classify_with_privategpt(
                     
                     if is_confirmation_positive:
                         print(f"✅ [Confirmation] Confirmación positiva detectada, usando slots pendientes")
+                        # Recuperar requirements desde el historial
+                        requirements_confirm = []
+                        current_req_index_confirm = 0
+                        for msg_req in reversed(conversation_history):
+                            role_req = msg_req.get("role") or msg_req.get("who")
+                            if role_req in ("bot", "assistant"):
+                                meta_req = msg_req.get("meta") or {}
+                                extra_req = meta_req.get("extra") or {}
+                                if isinstance(extra_req, dict) and extra_req.get("requirements"):
+                                    requirements_confirm = extra_req.get("requirements", [])
+                                    current_req_index_confirm = extra_req.get("current_requirement_index", 0)
+                                    break
+                        
                         return _handle_confirmation_stage(
                             user_text, pending_slots, conversation_history,
-                            category, subcategory, student_data, perfil_id
+                            category, subcategory, student_data, perfil_id,
+                            requirements_confirm, current_req_index_confirm
                         )
                     elif is_confirmation_negative:
                         print(f"❌ [Confirmation] Confirmación negativa detectada")
+                        # Verificar si es confirmación de múltiples requerimientos
+                        is_multi_req_neg = False
+                        requirements_neg = []
+                        current_req_index_neg = 0
+                        for msg_check in reversed(conversation_history):
+                            role_check = msg_check.get("role") or msg_check.get("who")
+                            if role_check in ("bot", "assistant"):
+                                meta_check = msg_check.get("meta") or {}
+                                extra_check = meta_check.get("extra") or {}
+                                if isinstance(extra_check, dict):
+                                    if extra_check.get("is_multi_req_confirmation"):
+                                        is_multi_req_neg = True
+                                    if extra_check.get("requirements"):
+                                        requirements_neg = extra_check.get("requirements", [])
+                                        current_req_index_neg = extra_check.get("current_requirement_index", 0)
+                                        if is_multi_req_neg:
+                                            break
+                        
+                        if is_multi_req_neg and requirements_neg and len(requirements_neg) > 1:
+                            # Usuario dijo "no" a "¿te parece?" → pasar al segundo requerimiento
+                            next_index = 1  # Segundo requerimiento (índice 1)
+                            if next_index < len(requirements_neg):
+                                second_req = requirements_neg[next_index]
+                                second_req_slots = second_req.get("slots", {})
+                                confirm_text_second = second_req_slots.get("confirm_text", "").strip()
+                                if not confirm_text_second:
+                                    confirm_text_second = _confirm_text_from_slots(second_req_slots)
+                                
+                                # Mostrar confirmación del segundo requerimiento
+                                response = _build_need_confirm_response(
+                                    confirm_text=confirm_text_second,
+                                    intent_slots=second_req_slots,
+                                    category=category,
+                                    subcategory=subcategory
+                                )
+                                
+                                # Incluir requirements actualizados
+                                if "extra" not in response:
+                                    response["extra"] = {}
+                                response["extra"]["requirements"] = requirements_neg
+                                response["extra"]["current_requirement_index"] = next_index
+                                
+                                return response
+                        
                         return _build_frontend_response(
                             stage=ConversationStage.AWAIT_INTENT,
                             mode=ConversationMode.INFORMATIVE,
@@ -1775,7 +2316,14 @@ def classify_with_privategpt(
     
     # 3. Detectar estado del flujo desde el historial
     print(f"🔍 [Stage Detection] Analizando historial de {len(conversation_history)} mensajes")
-    stage, pending_slots, handoff_channel = _detect_stage_from_history(conversation_history)
+    # Si ya detectamos el stage arriba (para evitar falsos positivos), reutilizarlo
+    if 'stage_temp' in locals():
+        stage, pending_slots, handoff_channel = stage_temp, None, None
+        # Re-detectar para obtener pending_slots y handoff_channel completos
+        _, pending_slots, handoff_channel = _detect_stage_from_history(conversation_history)
+        stage = stage_temp  # Mantener el stage detectado arriba
+    else:
+        stage, pending_slots, handoff_channel = _detect_stage_from_history(conversation_history)
     
     print(f"📊 [Stage Detection] Stage final detectado: {stage}")
     if stage == ConversationStage.AWAIT_HANDOFF_DETAILS.value:
@@ -1803,10 +2351,101 @@ def classify_with_privategpt(
     
     # 4. Etapa de confirmación
     if stage == ConversationStage.AWAIT_CONFIRM.value:
+        # Verificar si es una confirmación de múltiples requerimientos
+        is_multi_req_confirmation = False
+        for msg in reversed(conversation_history):
+            role = msg.get("role") or msg.get("who")
+            if role in ("bot", "assistant"):
+                meta = msg.get("meta") or {}
+                extra = meta.get("extra") or {}
+                if isinstance(extra, dict) and extra.get("is_multi_req_confirmation"):
+                    is_multi_req_confirmation = True
+                    # Recuperar requirements desde el historial
+                    if not requirements:
+                        requirements = extra.get("requirements", [])
+                        current_req_index = extra.get("current_requirement_index", 0)
+                    break
+        
+        if is_multi_req_confirmation:
+            # Manejar confirmación de múltiples requerimientos
+            if es_confirmacion_positiva(user_text):
+                # Usuario dijo "sí" → mostrar confirmación del primer requerimiento
+                if requirements and current_req_index < len(requirements):
+                    first_req = requirements[current_req_index]
+                    first_req_slots = first_req.get("slots", {})
+                    confirm_text_first = first_req_slots.get("confirm_text", "").strip()
+                    if not confirm_text_first:
+                        confirm_text_first = _confirm_text_from_slots(first_req_slots)
+                    
+                    # Mostrar confirmación del primer requerimiento
+                    response = _build_need_confirm_response(
+                        confirm_text=confirm_text_first,
+                        intent_slots=first_req_slots,
+                        category=category,
+                        subcategory=subcategory
+                    )
+                    
+                    # Incluir requirements para mantener el contexto
+                    if "extra" not in response:
+                        response["extra"] = {}
+                    response["extra"]["requirements"] = requirements
+                    response["extra"]["current_requirement_index"] = current_req_index
+                    
+                    return response
+            elif es_confirmacion_negativa(user_text):
+                # Usuario dijo "no" → pasar al segundo requerimiento y mostrar su confirmación
+                if requirements and len(requirements) > 1:
+                    # Mover al siguiente requerimiento
+                    next_index = 1  # Segundo requerimiento (índice 1)
+                    if next_index < len(requirements):
+                        second_req = requirements[next_index]
+                        second_req_slots = second_req.get("slots", {})
+                        confirm_text_second = second_req_slots.get("confirm_text", "").strip()
+                        if not confirm_text_second:
+                            confirm_text_second = _confirm_text_from_slots(second_req_slots)
+                        
+                        # Actualizar current_req_index
+                        current_req_index = next_index
+                        
+                        # Mostrar confirmación del segundo requerimiento
+                        response = _build_need_confirm_response(
+                            confirm_text=confirm_text_second,
+                            intent_slots=second_req_slots,
+                            category=category,
+                            subcategory=subcategory
+                        )
+                        
+                        # Incluir requirements actualizados
+                        if "extra" not in response:
+                            response["extra"] = {}
+                        response["extra"]["requirements"] = requirements
+                        response["extra"]["current_requirement_index"] = current_req_index
+                        
+                        return response
+                    else:
+                        return _build_frontend_response(
+                            stage=ConversationStage.AWAIT_INTENT,
+                            mode=ConversationMode.INFORMATIVE,
+                            status=ConversationStatus.ANSWER,
+                            message="No hay más requerimientos pendientes. ¿En qué más puedo ayudarte?",
+                            has_information=False,
+                            extra={"has_more_requirements": False}
+                        )
+                else:
+                    return _build_frontend_response(
+                        stage=ConversationStage.AWAIT_INTENT,
+                        mode=ConversationMode.INFORMATIVE,
+                        status=ConversationStatus.ANSWER,
+                        message="Gracias por aclarar. Cuéntame nuevamente tu requerimiento en una frase y lo vuelvo a interpretar.",
+                        has_information=False
+                    )
+        
+        # Confirmación normal (no múltiples requerimientos)
         if es_confirmacion_positiva(user_text):
             return _handle_confirmation_stage(
                 user_text, pending_slots, conversation_history,
-                category, subcategory, student_data, perfil_id
+                category, subcategory, student_data, perfil_id,
+                requirements, current_req_index
             )
         elif es_confirmacion_negativa(user_text):
             return {
@@ -1837,110 +2476,303 @@ def classify_with_privategpt(
     
     # 5. Etapa de selección de solicitud relacionada
     elif stage == ConversationStage.AWAIT_RELATED_REQUEST.value:
-        # El usuario puede seleccionar una solicitud o decir "no hay solicitud relacionada"
-        user_text_str = str(user_text) if user_text is not None else ""
-        user_text_lower = user_text_str.lower().strip()
-        
-        # Buscar en el historial las solicitudes relacionadas mostradas
-        related_requests_shown = []
-        for msg in reversed(conversation_history):
-            role = msg.get("role") or msg.get("who")
-            if role in ("bot", "assistant"):
-                meta = msg.get("meta") or {}
-                if isinstance(meta, dict) and meta.get("related_requests"):
-                    related_requests_shown = meta.get("related_requests", [])
-                    break
-        
-        # Detectar si el usuario dice "no hay" o similar
-        no_related_keywords = ["no hay", "ninguna", "ninguna es relevante", "continuar sin relacionar", "sin relacionar", "no hay solicitud relacionada"]
-        user_said_no_related = any(keyword in user_text_lower for keyword in no_related_keywords)
-        
-        # Recuperar intent_slots y mensaje confirmado
-        intent_slots = pending_slots
-        if not intent_slots:
+        # Usar función helper para determinar si es un nuevo intento
+        if _is_new_intent(user_text, conversation_history):
+            print(f"🔄 [Stage Detection] Detectado nuevo intento usando _is_new_intent(), tratando como nuevo intento")
+            # Tratar como nuevo intento - continuar con el flujo normal
+            stage = ConversationStage.AWAIT_INTENT.value
+        else:
+            # El usuario está respondiendo a las solicitudes relacionadas mostradas
+            user_text_str = str(user_text) if user_text is not None else ""
+            user_text_lower = user_text_str.lower().strip()
+            
+            # Buscar en el historial las solicitudes relacionadas mostradas
+            related_requests_shown = []
             for msg in reversed(conversation_history):
                 role = msg.get("role") or msg.get("who")
-                if role not in ("bot", "assistant"):
-                    continue
-                meta = msg.get("meta") or {}
-                if isinstance(meta, dict) and meta.get("intent_slots"):
-                    intent_slots = meta.get("intent_slots")
-                    break
-        
-        # Recuperar el mensaje ORIGINAL del usuario (no el interpretado)
-        # El mensaje original se guarda en intent_slots["original_user_message"] cuando se interpreta la intención
-        original_user_request = None
-        
-        # Primero, buscar el mensaje original en intent_slots
-        if intent_slots:
-            original_user_request = intent_slots.get("original_user_message", "")
-        
-        # Si no está en intent_slots, buscar en el historial (el mensaje antes de la confirmación)
-        if not original_user_request:
-            for i, msg in enumerate(reversed(conversation_history)):
-                role = msg.get("role") or msg.get("who")
                 if role in ("bot", "assistant"):
-                    needs_confirm = msg.get("needs_confirmation", False)
                     meta = msg.get("meta") or {}
-                    if isinstance(meta, dict):
-                        needs_confirm = needs_confirm or meta.get("needs_confirmation", False)
-                    
-                    if needs_confirm:
-                        history_list = list(conversation_history)
-                        bot_index = len(history_list) - i - 1
-                        if bot_index > 0:
-                            for j in range(bot_index - 1, -1, -1):
-                                prev_msg = history_list[j]
-                                prev_role = prev_msg.get("role") or prev_msg.get("who")
-                                if prev_role in ("user", "student", "estudiante"):
-                                    prev_text = prev_msg.get("content") or prev_msg.get("text", "")
-                                    if prev_text and not es_confirmacion_positiva(prev_text) and not es_confirmacion_negativa(prev_text):
-                                        original_user_request = prev_text
-                                        break
-                        if original_user_request:
+                    if isinstance(meta, dict) and meta.get("related_requests"):
+                        related_requests_shown = meta.get("related_requests", [])
+                        break
+            
+            # Detectar si el usuario dice "no hay" o similar
+            no_related_keywords = ["no hay", "ninguna", "ninguna es relevante", "continuar sin relacionar", 
+                                   "sin relacionar", "no hay solicitud relacionada"]
+            user_said_no_related = any(keyword in user_text_lower for keyword in no_related_keywords)
+            
+            # Detectar qué solicitud relacionada seleccionó el usuario (si seleccionó alguna)
+            selected_related_request = None
+            
+            # Si el usuario dice "no hay solicitud relacionada", limpiar cualquier selección anterior
+            if user_said_no_related:
+                selected_related_request = None
+                print(f"🔄 [Related Request] Usuario rechazó solicitudes relacionadas, limpiando selección anterior")
+            else:
+                # Primero, intentar recuperar la solicitud relacionada seleccionada del historial
+                # (por si el usuario ya la seleccionó anteriormente y está haciendo una pregunta de seguimiento)
+                for msg in reversed(conversation_history):
+                    role = msg.get("role") or msg.get("who")
+                    if role in ("bot", "assistant"):
+                        meta = msg.get("meta") or {}
+                        extra = meta.get("extra") or {}
+                        if isinstance(extra, dict) and extra.get("selected_related_request"):
+                            selected_related_request = extra.get("selected_related_request")
+                            print(f"✅ [Related Request] Recuperada solicitud relacionada seleccionada del historial: {selected_related_request.get('codigo', 'N/A')}")
                             break
-        
-        # Si aún no se encontró, usar el mensaje actual (última opción)
-        if not original_user_request:
-            original_user_request = user_text
-        
-        # Recuperar el answer_type desde intent_slots (ya fue determinado en la confirmación)
-        answer_type = intent_slots.get("answer_type") if intent_slots else None
-        
-        if not answer_type:
-            # Si no está en intent_slots, determinarlo ahora (fallback)
-            intent_short = intent_slots.get("intent_short", "") if intent_slots else ""
-            answer_type = _classify_answer_type_fallback(intent_short, intent_slots, original_user_request)
-            answer_type = _aplicar_excepciones_informativas(answer_type, intent_short, intent_slots, original_user_request)
-            # Normalizar: mapear "procedimental" a "informativo" (ya no se usa "procedimental")
-            if answer_type == "procedimental":
-                answer_type = "informativo"
-        
-        print(f"🔍 [Related Request] Tipo de respuesta: {answer_type} (desde confirmación)")
-        
-        # Si es operativo, ir directamente al handoff sin pasar por PrivateGPT
-        if answer_type == "operativo":
-            print(f"✅ [Related Request] Intención operativa, yendo directamente al handoff")
             
-            # Recuperar category y subcategory desde intent_slots si están disponibles
-            if not category:
-                category = intent_slots.get("category") if intent_slots else None
-            if not subcategory:
-                subcategory = intent_slots.get("subcategory") if intent_slots else None
+            # Si no se encontró en el historial, intentar detectar la selección del mensaje actual
+            if not selected_related_request and not user_said_no_related and related_requests_shown:
+                # Intentar detectar por número (1, 2, 3, etc.)
+                import re
+                number_match = re.search(r'\b([1-9])\b', user_text_str)
+                if number_match:
+                    selected_index = int(number_match.group(1)) - 1
+                    if 0 <= selected_index < len(related_requests_shown):
+                        selected_related_request = related_requests_shown[selected_index]
+                        print(f"✅ [Related Request] Usuario seleccionó solicitud #{selected_index + 1}: {selected_related_request.get('codigo', 'N/A')}")
+                
+                # Si no se detectó por número, intentar por código
+                if not selected_related_request:
+                    for req in related_requests_shown:
+                        codigo = req.get("codigo", "") or req.get("codigo_generado", "")
+                        if codigo and codigo.lower() in user_text_lower:
+                            selected_related_request = req
+                            print(f"✅ [Related Request] Usuario seleccionó solicitud por código: {codigo}")
+                            break
             
-            # Usar classify_with_heuristics (sin LLM)
-            if not category or not subcategory:
-                try:
-                    heuristic_classification = classify_with_heuristics(intent_slots)
-                    # Nota: classify_with_heuristics no retorna category/subcategory,
-                    # pero sí department y channel que es lo que necesitamos para handoff
-                    print(f"📋 [Handoff] Clasificación heurística:")
-                    print(f"   Department: {heuristic_classification.get('department')}")
-                    print(f"   Channel: {heuristic_classification.get('channel')}")
-                except Exception as e:
-                    print(f"⚠️ [Handoff] Error en clasificación heurística: {e}")
+            # Recuperar intent_slots y mensaje confirmado
+            intent_slots = pending_slots
+            if not intent_slots:
+                for msg in reversed(conversation_history):
+                    role = msg.get("role") or msg.get("who")
+                    if role not in ("bot", "assistant"):
+                        continue
+                    meta = msg.get("meta") or {}
+                    if isinstance(meta, dict) and meta.get("intent_slots"):
+                        intent_slots = meta.get("intent_slots")
+                        break
             
-            # Ir directamente al handoff
+            # Recuperar el mensaje ORIGINAL del usuario (no el interpretado)
+            # El mensaje original se guarda en intent_slots["original_user_message"] cuando se interpreta la intención
+            original_user_request = None
+            
+            # Primero, buscar el mensaje original en intent_slots
+            if intent_slots:
+                original_user_request = intent_slots.get("original_user_message", "")
+            
+            # Si no está en intent_slots, buscar en el historial (el mensaje antes de la confirmación)
+            if not original_user_request:
+                for i, msg in enumerate(reversed(conversation_history)):
+                    role = msg.get("role") or msg.get("who")
+                    if role in ("bot", "assistant"):
+                        needs_confirm = msg.get("needs_confirmation", False)
+                        meta = msg.get("meta") or {}
+                        if isinstance(meta, dict):
+                            needs_confirm = needs_confirm or meta.get("needs_confirmation", False)
+                        
+                        if needs_confirm:
+                            history_list = list(conversation_history)
+                            bot_index = len(history_list) - i - 1
+                            if bot_index > 0:
+                                for j in range(bot_index - 1, -1, -1):
+                                    prev_msg = history_list[j]
+                                    prev_role = prev_msg.get("role") or prev_msg.get("who")
+                                    if prev_role in ("user", "student", "estudiante"):
+                                        prev_text = prev_msg.get("content") or prev_msg.get("text", "")
+                                        if prev_text and not es_confirmacion_positiva(prev_text) and not es_confirmacion_negativa(prev_text):
+                                            original_user_request = prev_text
+                                            break
+                            if original_user_request:
+                                break
+            
+            # Si aún no se encontró, usar el mensaje actual (última opción)
+            if not original_user_request:
+                original_user_request = user_text
+            
+            # Recuperar el answer_type desde intent_slots (ya fue determinado en la confirmación)
+            answer_type = intent_slots.get("answer_type") if intent_slots else None
+            
+            if not answer_type:
+                # Si no está en intent_slots, determinarlo ahora (fallback)
+                intent_short = intent_slots.get("intent_short", "") if intent_slots else ""
+                answer_type = _classify_answer_type_fallback(intent_short, intent_slots, original_user_request)
+                answer_type = _aplicar_excepciones_informativas(answer_type, intent_short, intent_slots, original_user_request)
+                # Normalizar: mapear "procedimental" a "informativo" (ya no se usa "procedimental")
+                if answer_type == "procedimental":
+                    answer_type = "informativo"
+            
+            # Procesar la respuesta a solicitudes relacionadas
+            print(f"🔍 [Related Request] Tipo de respuesta: {answer_type} (desde confirmación)")
+            
+            # Si es operativo, ir directamente al handoff sin pasar por PrivateGPT
+            if answer_type == "operativo":
+                print(f"✅ [Related Request] Intención operativa, yendo directamente al handoff")
+                
+                # Recuperar category y subcategory desde intent_slots si están disponibles
+                if not category:
+                    category = intent_slots.get("category") if intent_slots else None
+                if not subcategory:
+                    subcategory = intent_slots.get("subcategory") if intent_slots else None
+                
+                # Usar classify_with_heuristics (sin LLM)
+                if not category or not subcategory:
+                    try:
+                        heuristic_classification = classify_with_heuristics(intent_slots)
+                        # Nota: classify_with_heuristics no retorna category/subcategory,
+                        # pero sí department y channel que es lo que necesitamos para handoff
+                        print(f"📋 [Handoff] Clasificación heurística:")
+                        print(f"   Department: {heuristic_classification.get('department')}")
+                        print(f"   Channel: {heuristic_classification.get('channel')}")
+                    except Exception as e:
+                        print(f"⚠️ [Handoff] Error en clasificación heurística: {e}")
+                
+                # Ir directamente al handoff
+                depto = _determinar_departamento_handoff(
+                    user_text=original_user_request,
+                    category=category,
+                    subcategory=subcategory,
+                    intent_slots=intent_slots,
+                    student_data=student_data
+                )
+                response = _build_handoff_response(depto, student_data, category, subcategory, intent_slots)
+                # Finalizar requerimiento y ofrecer siguiente si hay más
+                return _finish_requirement_and_maybe_next(response, requirements, current_req_index)
+            
+            # Si es informativo, entonces sí llamar a PrivateGPT
+            if user_said_no_related:
+                # Usuario eligió continuar sin relacionar → Enviar mensaje confirmado a PrivateGPT API
+                print(f"✅ [PrivateGPT] Usuario rechazó solicitudes relacionadas, enviando mensaje confirmado a la API")
+                print(f"   Mensaje confirmado: '{original_user_request[:100]}'")
+                # Construir mensaje sin contexto de solicitud relacionada
+                message_for_privategpt = original_user_request
+            else:
+                # Usuario seleccionó una solicitud relacionada → Enviar mensaje confirmado a PrivateGPT API
+                if selected_related_request:
+                    print(f"✅ [PrivateGPT] Usuario seleccionó solicitud relacionada: {selected_related_request.get('codigo', 'N/A')}")
+                    # Construir mensaje enriquecido con información de la solicitud relacionada seleccionada
+                    codigo_seleccionado = selected_related_request.get("codigo", "") or selected_related_request.get("codigo_generado", "")
+                    descripcion_seleccionada = selected_related_request.get("descripcion", "")[:200]  # Primeros 200 caracteres
+                    
+                    message_for_privategpt = (
+                        f"{original_user_request}\n\n"
+                        f"[CONTEXTO: Solicitud relacionada seleccionada - Código: {codigo_seleccionado}]\n"
+                        f"Descripción de la solicitud relacionada: {descripcion_seleccionada}"
+                    )
+                    print(f"   Mensaje enriquecido con solicitud relacionada: '{message_for_privategpt[:150]}...'")
+                else:
+                    # No se detectó selección específica, usar mensaje original
+                    print(f"✅ [PrivateGPT] Usuario respondió a solicitudes relacionadas pero no se detectó selección específica")
+                    message_for_privategpt = original_user_request
+            
+            # Guardar la solicitud relacionada seleccionada en el historial para referencia futura
+            if selected_related_request:
+                # Crear un mensaje del sistema que guarde la selección
+                selection_message = {
+                    "role": "system",
+                    "content": f"Usuario seleccionó solicitud relacionada: {selected_related_request.get('codigo', 'N/A')} - {selected_related_request.get('descripcion', '')[:100]}",
+                    "meta": {
+                        "selected_related_request": selected_related_request,
+                        "selected_related_request_id": selected_related_request.get("id"),
+                        "selected_related_request_codigo": selected_related_request.get("codigo") or selected_related_request.get("codigo_generado", "")
+                    }
+                }
+                # Agregar al historial temporalmente para que esté disponible en el contexto
+                conversation_history_with_selection = conversation_history + [selection_message]
+            else:
+                conversation_history_with_selection = conversation_history
+            
+            # Enviar mensaje original del usuario a PrivateGPT API (solo para intenciones informativas)
+            print(f"   📍 [FLUJO] Punto de entrada (solicitud relacionada - informativo): Llamando a _call_privategpt_api()")
+            try:
+                privategpt_result = _call_privategpt_api(
+                    user_text=message_for_privategpt,  # Mensaje enriquecido con contexto de solicitud relacionada si aplica
+                    conversation_history=conversation_history_with_selection,  # Historial con información de selección
+                    category=None,  # No enviar categoría a PrivateGPT
+                    subcategory=None,  # No enviar subcategoría a PrivateGPT
+                    student_data=student_data,  # Enviar student_data para contexto de rol
+                    perfil_id=perfil_id  # Enviar perfil_id para identificar el perfil específico
+                )
+                print(f"   ✅ [FLUJO] _call_privategpt_api() retornó exitosamente")
+            except Exception as e:
+                print(f"   ❌ [FLUJO] Error al llamar a _call_privategpt_api(): {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                raise
+            
+            has_information = privategpt_result.get("has_information", False)
+            response_text = privategpt_result.get("response", "")
+            fuentes = privategpt_result.get("fuentes", [])
+            
+            # Si tiene información, devolver respuesta con fuentes
+            if has_information:
+                print(f"✅ [PrivateGPT] Respuesta con información encontrada")
+                print(f"   Fuentes agrupadas: {len(fuentes)}")
+                
+                # Recuperar requirements desde el historial (buscar en múltiples lugares)
+                requirements_resp = []
+                current_req_index_resp = 0
+                for msg in reversed(conversation_history):
+                    role = msg.get("role") or msg.get("who")
+                    if role in ("bot", "assistant"):
+                        # Buscar en meta.extra primero
+                        meta = msg.get("meta") or {}
+                        extra = meta.get("extra") or {}
+                        
+                        # También buscar directamente en el mensaje
+                        if not extra:
+                            extra = msg.get("extra") or {}
+                        
+                        if isinstance(extra, dict) and extra.get("requirements"):
+                            requirements_resp = extra.get("requirements", [])
+                            current_req_index_resp = extra.get("current_requirement_index", 0)
+                            print(f"📋 [Multi-Req] Requirements recuperados desde historial: {len(requirements_resp)} requerimientos, índice actual: {current_req_index_resp}")
+                            break
+                
+                # Si no se encontraron requirements en el historial, intentar recuperarlos desde el contexto actual
+                if not requirements_resp:
+                    print(f"⚠️ [Multi-Req] No se encontraron requirements en historial, buscando en contexto actual")
+                    # Intentar recuperar desde el contexto de la función (si están disponibles)
+                    if 'requirements' in locals() and requirements:
+                        requirements_resp = requirements
+                        current_req_index_resp = current_req_index if 'current_req_index' in locals() else 0
+                        print(f"📋 [Multi-Req] Requirements recuperados desde contexto local: {len(requirements_resp)} requerimientos")
+                
+                response = _build_informative_answer_response(
+                    resumen=response_text,
+                    fuentes=fuentes,
+                    intent_slots=intent_slots,
+                    category=category,
+                    subcategory=subcategory
+                )
+                
+                # Guardar información de la solicitud relacionada seleccionada en la respuesta
+                if selected_related_request:
+                    if "extra" not in response:
+                        response["extra"] = {}
+                    response["extra"]["selected_related_request"] = selected_related_request
+                    response["extra"]["selected_related_request_id"] = selected_related_request.get("id")
+                    response["extra"]["selected_related_request_codigo"] = selected_related_request.get("codigo") or selected_related_request.get("codigo_generado", "")
+                    # También guardar en meta para persistencia en historial
+                    if "meta" not in response:
+                        response["meta"] = {}
+                    if "extra" not in response["meta"]:
+                        response["meta"]["extra"] = {}
+                    response["meta"]["extra"]["selected_related_request"] = selected_related_request
+                    response["meta"]["extra"]["selected_related_request_id"] = selected_related_request.get("id")
+                    response["meta"]["extra"]["selected_related_request_codigo"] = selected_related_request.get("codigo") or selected_related_request.get("codigo_generado", "")
+                
+                # Finalizar requerimiento y ofrecer siguiente si hay más
+                if requirements_resp:
+                    print(f"📋 [Multi-Req] Llamando a _finish_requirement_and_maybe_next con {len(requirements_resp)} requerimientos")
+                    return _finish_requirement_and_maybe_next(response, requirements_resp, current_req_index_resp)
+                else:
+                    print(f"⚠️ [Multi-Req] No hay requirements disponibles, retornando respuesta sin menú")
+                    return response
+            
+            # Si NO tiene información, determinar departamento y hacer handoff
+            print(f"⚠️ [PrivateGPT] No se encontró información, derivando a agente humano")
+            
             depto = _determinar_departamento_handoff(
                 user_text=original_user_request,
                 category=category,
@@ -1948,85 +2780,42 @@ def classify_with_privategpt(
                 intent_slots=intent_slots,
                 student_data=student_data
             )
-            return _build_handoff_response(depto, student_data, category, subcategory, intent_slots)
-        
-        # Si es informativo, entonces sí llamar a PrivateGPT
-        if user_said_no_related:
-            # Usuario eligió continuar sin relacionar → Enviar mensaje confirmado a PrivateGPT API
-            print(f"✅ [PrivateGPT] Usuario rechazó solicitudes relacionadas, enviando mensaje confirmado a la API")
-            print(f"   Mensaje confirmado: '{original_user_request[:100]}'")
-        else:
-            # Usuario seleccionó una solicitud relacionada → Enviar mensaje confirmado a PrivateGPT API
-            print(f"✅ [PrivateGPT] Usuario seleccionó solicitud relacionada, enviando mensaje confirmado a la API")
-            print(f"   Mensaje confirmado: '{original_user_request[:100]}'")
-        
-        # Enviar mensaje original del usuario a PrivateGPT API (solo para intenciones informativas)
-        print(f"   📍 [FLUJO] Punto de entrada (solicitud relacionada - informativo): Llamando a _call_privategpt_api()")
-        try:
-            privategpt_result = _call_privategpt_api(
-                user_text=original_user_request,  # SOLO el mensaje original del usuario, no el interpretado
-                conversation_history=conversation_history,
-                category=None,  # No enviar categoría a PrivateGPT
-                subcategory=None,  # No enviar subcategoría a PrivateGPT
-                student_data=student_data,  # Enviar student_data para contexto de rol
-                perfil_id=perfil_id  # Enviar perfil_id para identificar el perfil específico
-            )
-            print(f"   ✅ [FLUJO] _call_privategpt_api() retornó exitosamente")
-        except Exception as e:
-            print(f"   ❌ [FLUJO] Error al llamar a _call_privategpt_api(): {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise
-        
-        has_information = privategpt_result.get("has_information", False)
-        response_text = privategpt_result.get("response", "")
-        fuentes = privategpt_result.get("fuentes", [])
-        
-        # Si tiene información, devolver respuesta con fuentes
-        if has_information:
-            print(f"✅ [PrivateGPT] Respuesta con información encontrada")
-            print(f"   Fuentes agrupadas: {len(fuentes)}")
             
-            return _build_informative_answer_response(
-                resumen=response_text,
-                fuentes=fuentes,
-                intent_slots=intent_slots,
-                category=category,
-                subcategory=subcategory
+            student_name = _get_student_name(student_data)
+            saludo_nombre = f"{student_name.split()[0]}, " if student_name else ""
+            ask_msg = (
+                f"{saludo_nombre}Este caso necesita ser revisado por mis compañeros humanos del departamento **{depto}**. 💁\n\n"
+                f"Para enviar tu solicitud, por favor:\n"
+                f"1. Describe nuevamente tu requerimiento con todos los detalles.\n"
+                f"2. Sube un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud.\n\n"
+                f"Con esta información podré derivarlo al equipo correspondiente. ✔️"
             )
-        
-        # Si NO tiene información, determinar departamento y hacer handoff
-        print(f"⚠️ [PrivateGPT] No se encontró información, derivando a agente humano")
-        
-        depto = _determinar_departamento_handoff(
-            user_text=original_user_request,
-            category=category,
-            subcategory=subcategory,
-            intent_slots=intent_slots,
-            student_data=student_data
-        )
-        
-        student_name = _get_student_name(student_data)
-        saludo_nombre = f"{student_name.split()[0]}, " if student_name else ""
-        ask_msg = (
-            f"{saludo_nombre}Este caso necesita ser revisado por mis compañeros humanos del departamento **{depto}**. 💁\n\n"
-            f"Para enviar tu solicitud, por favor:\n"
-            f"1. Describe nuevamente tu requerimiento con todos los detalles.\n"
-            f"2. Sube un archivo PDF o imagen (máximo 4MB) relacionado con tu solicitud.\n\n"
-            f"Con esta información podré derivarlo al equipo correspondiente. ✔️"
-        )
 
-        print(f"🔀 [Handoff] Derivando a: {depto}")
-        
-        return _build_handoff_response_new(
-            resumen=ask_msg,
-            depto_real=depto,
-            intent_slots=intent_slots,
-            needs_handoff_details=True,
-            category=category,
-            subcategory=subcategory,
-            student_data=student_data
-        )
+            print(f"🔀 [Handoff] Derivando a: {depto}")
+            
+            response = _build_handoff_response_new(
+                resumen=ask_msg,
+                depto_real=depto,
+                intent_slots=intent_slots,
+                needs_handoff_details=True,
+                category=category,
+                subcategory=subcategory,
+                student_data=student_data
+            )
+            # Recuperar requirements desde el historial
+            requirements_resp = []
+            current_req_index_resp = 0
+            for msg in reversed(conversation_history):
+                role = msg.get("role") or msg.get("who")
+                if role in ("bot", "assistant"):
+                    meta = msg.get("meta") or {}
+                    extra = meta.get("extra") or {}
+                    if isinstance(extra, dict) and extra.get("requirements"):
+                        requirements_resp = extra.get("requirements", [])
+                        current_req_index_resp = extra.get("current_requirement_index", 0)
+                        break
+            
+            return _finish_requirement_and_maybe_next(response, requirements_resp, current_req_index_resp)
     
     # 6. Etapa de detalles de handoff (usuario proporciona detalles y archivo para enviar al departamento)
     elif stage == ConversationStage.AWAIT_HANDOFF_DETAILS.value:
@@ -2176,13 +2965,28 @@ def classify_with_privategpt(
             # Mensaje final de confirmación
             final_message = (
                 f"{saludo_nombre}✅ Tu solicitud ha sido enviada exitosamente al departamento **{handoff_channel or 'correspondiente'}**. 📋\n\n"
-                f"Un agente se pondrá en contacto contigo pronto para dar seguimiento a tu solicitud. Mantente atento a tu correo. ¿Hay algo mas en que te pueda ayudar?"
+                f"Un agente se pondrá en contacto contigo pronto para dar seguimiento a tu solicitud. Mantente atento a tu correo."
             )
             
             print(f"🔀 [Handoff] Solicitud enviada a: {handoff_channel}")
             
-            return {
+            # Recuperar requirements desde el historial
+            requirements_final = []
+            current_req_index_final = 0
+            for msg in reversed(conversation_history):
+                role = msg.get("role") or msg.get("who")
+                if role in ("bot", "assistant"):
+                    meta = msg.get("meta") or {}
+                    extra = meta.get("extra") or {}
+                    if isinstance(extra, dict) and extra.get("requirements"):
+                        requirements_final = extra.get("requirements", [])
+                        current_req_index_final = extra.get("current_requirement_index", 0)
+                        break
+            
+            response = {
                 "summary": final_message,
+                "message": final_message,
+                "response": final_message,
                 "category": category,
                 "subcategory": subcategory,
                 "confidence": 1.0,
@@ -2191,7 +2995,7 @@ def classify_with_privategpt(
                 "needs_handoff_details": False,
                 "needs_handoff_file": False,
                 "handoff_sent": True,
-                "close_chat": True,  # Cerrar el chat después de enviar
+                "close_chat": False,  # No cerrar automáticamente si hay más requerimientos
                 "confirmed": True,
                 "handoff": True,
                 "handoff_channel": handoff_channel,
@@ -2199,8 +3003,18 @@ def classify_with_privategpt(
                 "source_pdfs": [],
                 "fuentes": [],
                 "has_information": False,
-                "thinking_status": thinking_status_handoff  # Mostrar mensaje de envío
+                "thinking_status": thinking_status_handoff,  # Mostrar mensaje de envío
+                "extra": {}
             }
+            
+            # Finalizar requerimiento y ofrecer siguiente si hay más
+            response = _finish_requirement_and_maybe_next(response, requirements_final, current_req_index_final)
+            
+            # Si no hay más requerimientos, cerrar el chat
+            if not response.get("extra", {}).get("has_more_requirements", False):
+                response["close_chat"] = True
+            
+            return response
         elif not has_file:
             # Falta archivo
             print(f"⚠️ [Handoff Details] Usuario no ha subido archivo")
@@ -2245,13 +3059,54 @@ def classify_with_privategpt(
         # Interpretar intención (incluye needs_confirmation, confirm_text, answer_type)
         print(f"🔍 [Intent Parser] Interpretando intención del mensaje: '{user_text[:100]}'")
         print(f"   Stage actual: {stage}")
-        intent_slots = interpretar_intencion_principal(user_text)
+        intent_slots_original = interpretar_intencion_principal(user_text)
         
         # Guardar el mensaje original del usuario en los intent_slots (por si acaso no vino del LLM)
-        if not intent_slots.get("original_user_message"):
-            intent_slots["original_user_message"] = user_text
+        if not intent_slots_original.get("original_user_message"):
+            intent_slots_original["original_user_message"] = user_text
+        
+        # Crear/actualizar cola de requerimientos
+        multi_intent = intent_slots_original.get("multi_intent", False)
+        intents_list = intent_slots_original.get("intents", [])
+        
+        # Si no hay requirements previos o control_action == "new_requirement", crear nueva cola
+        if not requirements or control_action == "new_requirement":
+            requirements = []
+            for idx, r in enumerate(intents_list):
+                requirements.append({
+                    "id": r.get("id", f"req_{idx + 1}"),
+                    "summary": r.get("intent_short", ""),
+                    "slots": r,
+                    "status": "pending"
+                })
+            current_req_index = 0
+        else:
+            # Actualizar requirements existentes si hay nuevos intents
+            # Solo agregar nuevos requerimientos si multi_intent es True
+            if multi_intent and len(intents_list) > len(requirements):
+                # Agregar nuevos requerimientos a la cola
+                for idx, r in enumerate(intents_list[len(requirements):], start=len(requirements)):
+                    requirements.append({
+                        "id": r.get("id", f"req_{idx + 1}"),
+                        "summary": r.get("intent_short", ""),
+                        "slots": r,
+                        "status": "pending"
+                    })
+        
+        # Obtener requerimiento activo
+        if requirements and current_req_index < len(requirements):
+            current_req = requirements[current_req_index]
+            # Usar los slots del requerimiento activo para el flujo
+            intent_slots = current_req.get("slots", intent_slots_original)
+        else:
+            # Fallback: usar intent_slots principal
+            current_req = None
+            intent_slots = intent_slots_original
         
         print(f"📋 [Intent Parser] Intención clasificada:")
+        print(f"   multi_intent: {multi_intent}")
+        print(f"   total_requirements: {len(requirements)}")
+        print(f"   current_requirement_index: {current_req_index}")
         print(f"   original_user_message: {intent_slots.get('original_user_message', 'N/A')[:100]}")
         print(f"   intent_short: {intent_slots.get('intent_short', 'N/A')}")
         print(f"   accion: {intent_slots.get('accion', 'N/A')}")
@@ -2259,6 +3114,42 @@ def classify_with_privategpt(
         print(f"   answer_type: {intent_slots.get('answer_type', 'N/A')}")
         print(f"   needs_confirmation: {intent_slots.get('needs_confirmation', 'N/A')}")
         
+        # Si hay múltiples requerimientos, informar al usuario
+        if multi_intent and len(requirements) > 1:
+            print(f"📋 [Multi-Intent] Detectados {len(requirements)} requerimientos:")
+            for i, req in enumerate(requirements):
+                print(f"   {i+1}. {req.get('summary', 'N/A')} (status: {req.get('status')})")
+            
+            # SIEMPRE mostrar mensaje informativo cuando hay múltiples requerimientos
+            # El mensaje debe cortar en "¿te parece?" para que el usuario responda sí/no
+            req_summaries = [f"{i+1}. {req.get('summary', 'N/A')}" for i, req in enumerate(requirements)]
+            multi_req_message = (
+                f"He detectado que estás pidiendo {len(requirements)} cosas distintas:\n\n"
+                + "\n".join(req_summaries) + "\n\n"
+                + f"Voy a ayudarte primero con el punto 1: **{requirements[0].get('summary', 'N/A')}**. "
+                + f"Luego vemos el punto 2, ¿te parece?"
+            )
+            
+            # Construir respuesta de confirmación SOLO con el mensaje de múltiples requerimientos
+            # NO incluir el confirm_text del primer requerimiento aquí
+            response = _build_need_confirm_response(
+                confirm_text=multi_req_message,
+                intent_slots=intent_slots_original,  # Usar los slots originales que incluyen todos los requerimientos
+                category=category,
+                subcategory=subcategory
+            )
+            
+            # Marcar que esta es una confirmación de múltiples requerimientos
+            # para que cuando el usuario responda sí/no, sepamos qué hacer
+            if "extra" not in response:
+                response["extra"] = {}
+            response["extra"]["requirements"] = requirements
+            response["extra"]["current_requirement_index"] = current_req_index
+            response["extra"]["is_multi_req_confirmation"] = True  # Flag especial para esta confirmación
+            
+            return response
+        
+        # Si solo hay un requerimiento, seguir flujo normal 
         # Usar confirm_text del LLM si está disponible, sino usar fallback
         confirm_text = intent_slots.get("confirm_text", "").strip()
         if not confirm_text:
@@ -2277,13 +3168,22 @@ def classify_with_privategpt(
             # Tratar como si el usuario hubiera confirmado
             return _handle_confirmation_stage(
                 user_text, intent_slots, conversation_history,
-                category, subcategory, student_data, perfil_id
+                category, subcategory, student_data, perfil_id,
+                requirements, current_req_index
             )
         
         # Si SÍ necesita confirmación, mostrar el mensaje de confirmación
-        return _build_need_confirm_response(
+        response = _build_need_confirm_response(
             confirm_text=confirm_text,
             intent_slots=intent_slots,
             category=category,
             subcategory=subcategory
         )
+        
+        # Incluir requirements en el extra
+        if "extra" not in response:
+            response["extra"] = {}
+        response["extra"]["requirements"] = requirements
+        response["extra"]["current_requirement_index"] = current_req_index
+        
+        return response

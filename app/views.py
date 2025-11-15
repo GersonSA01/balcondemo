@@ -297,6 +297,7 @@ def chat_api(request):
             category = request.POST.get("category")
             subcategory = request.POST.get("subcategory")
             profile_type = request.POST.get("profile_type") or request.POST.get("profileType")
+            control_action = request.POST.get("control_action")  # Acción de control para multi-requirement
             
             student_data_str = request.POST.get("student_data")
             student_data_raw = None
@@ -391,6 +392,7 @@ def chat_api(request):
             student_data_raw = payload.get("student_data")  # Datos del estudiante del frontend (puede venir como contexto)
             profile_type = payload.get("profile_type")
             perfil_id_from_payload = payload.get("perfil_id") or payload.get("perfilId")  # ID del perfil desde el frontend
+            control_action = payload.get("control_action")  # Acción de control para multi-requirement (sin LLM)
             
             # Cargar datos completos desde data_unemi.json si tenemos información del perfil
             student_data = None
@@ -492,7 +494,8 @@ def chat_api(request):
             subcategory=subcategory,
             student_data=student_data,
             uploaded_file=uploaded_file,  # Pasar archivo si existe
-            perfil_id=perfil_id_para_service  # Pasar perfil_id si está disponible
+            perfil_id=perfil_id_para_service,  # Pasar perfil_id si está disponible
+            control_action=control_action  # Pasar control_action para multi-requirement
         )
     except Exception as e:
         import traceback
@@ -500,11 +503,18 @@ def chat_api(request):
         
         # Detectar errores de API
         error_str = str(e).lower()
+        error_type = type(e).__name__
         
-        # Error de cuota agotada
-        if "429" in error_str or "quota exceeded" in error_str or "resourceexhausted" in error_str:
+        # Error de cuota agotada / rate limit
+        if ("429" in error_str or 
+            "quota exceeded" in error_str or 
+            "resourceexhausted" in error_str or
+            "límite de cuota excedido" in error_str or
+            "limite de cuota excedido" in error_str or
+            "rate limit" in error_str or
+            error_type == "RuntimeError" and ("cuota" in error_str or "limite" in error_str)):
             return JsonResponse({
-                "message": "Cuota de consultas por IA agotada. Por favor, intenta nuevamente mañana o contacta al administrador del sistema.",
+                "message": "⚠️ No puedo responder por el momento debido a límites del sistema. Por favor, ingresa tu solicitud manualmente a través del formulario del Balcón de Servicios.",
                 "category": None,
                 "subcategory": None,
                 "confidence": 0.0,
@@ -514,12 +524,15 @@ def chat_api(request):
                 "intent_slots": None,
                 "evidence": [],
                 "source_pdfs": [],
+                "has_information": False,
+                "handoff": True,
+                "handoff_reason": "Límite de sistema alcanzado",
             }, status=200)
         
         # Error de API key expirada o inválida
         if "api key expired" in error_str or "api_key_invalid" in error_str or "api key invalid" in error_str:
             return JsonResponse({
-                "message": "La clave de API ha expirado o es inválida. Por favor, contacta al administrador del sistema para renovarla.",
+                "message": "⚠️ No puedo responder por el momento debido a un problema técnico. Por favor, ingresa tu solicitud manualmente a través del formulario del Balcón de Servicios.",
                 "category": None,
                 "subcategory": None,
                 "confidence": 0.0,
@@ -529,17 +542,31 @@ def chat_api(request):
                 "intent_slots": None,
                 "evidence": [],
                 "source_pdfs": [],
+                "has_information": False,
+                "handoff": True,
+                "handoff_reason": "Error técnico del sistema",
             }, status=200)
         
+        # Error de timeout o conexión
+        if "timeout" in error_str or "connection" in error_str or "timed out" in error_str:
+            return JsonResponse({
+                "message": "⚠️ No puedo responder por el momento debido a problemas de conexión. Por favor, intenta nuevamente en unos momentos o ingresa tu solicitud manualmente.",
+                "category": None,
+                "subcategory": None,
+                "confidence": 0.0,
+                "fields_required": [],
+                "needs_confirmation": False,
+                "confirmed": None,
+                "intent_slots": None,
+                "evidence": [],
+                "source_pdfs": [],
+                "has_information": False,
+            }, status=200)
+        
+        # Error genérico - mensaje más claro
+        print(f"⚠️ [Views] Error no manejado específicamente: {error_type}: {str(e)}")
         return JsonResponse({
-            "error": f"Error al procesar la solicitud: {str(e)}"
-        }, status=500)
-
-    # Validar que result no sea None
-    if result is None:
-        print(f"⚠️ [Views] Error: result es None")
-        return JsonResponse({
-            "message": "No pude procesar tu solicitud. Por favor, intenta nuevamente.",
+            "message": "⚠️ No puedo procesar tu solicitud en este momento. Por favor, intenta nuevamente o ingresa tu solicitud manualmente a través del formulario del Balcón de Servicios.",
             "category": None,
             "subcategory": None,
             "confidence": 0.0,
@@ -549,11 +576,31 @@ def chat_api(request):
             "intent_slots": None,
             "evidence": [],
             "source_pdfs": [],
+            "has_information": False,
+        }, status=200)
+
+    # Validar que result no sea None
+    if result is None:
+        print(f"⚠️ [Views] Error: result es None")
+        return JsonResponse({
+            "message": "⚠️ No puedo procesar tu solicitud en este momento. Por favor, intenta nuevamente o ingresa tu solicitud manualmente a través del formulario del Balcón de Servicios.",
+            "category": None,
+            "subcategory": None,
+            "confidence": 0.0,
+            "fields_required": [],
+            "needs_confirmation": False,
+            "confirmed": None,
+            "intent_slots": None,
+            "evidence": [],
+            "source_pdfs": [],
+            "has_information": False,
         }, status=200)
 
     # Extraer respuesta
     # Buscar "summary" (formato de classify_with_privategpt) o "response" (formato directo de PrivateGPT)
-    reply = result.get("summary") or result.get("response") or "No pude procesar tu solicitud."
+    reply = result.get("summary") or result.get("response") or result.get("message")
+    if not reply:
+        reply = "⚠️ No puedo procesar tu solicitud en este momento. Por favor, intenta nuevamente o ingresa tu solicitud manualmente."
     
     if student_data:
         nombre_esperado = student_data.get("credenciales", {}).get("nombre_completo", "").split()[0] if student_data.get("credenciales", {}).get("nombre_completo") else ""
