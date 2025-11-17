@@ -631,6 +631,8 @@ def chat_api(request):
         "needs_related_request_selection": result.get("needs_related_request_selection", False),  # Si necesita selección de solicitud relacionada
         "related_requests": result.get("related_requests", []),  # Lista de solicitudes relacionadas
         "no_related_request_option": result.get("no_related_request_option", False),  # Si se debe mostrar opción "No hay solicitud relacionada"
+        "needs_requirement_selection": result.get("needs_requirement_selection", False),  # Si necesita selección de requerimiento
+        "requirement_options": result.get("requirement_options", []),  # Opciones de requerimientos para botones
         "handoff": result.get("handoff", False),
         "handoff_reason": result.get("handoff_reason"),
         "handoff_channel": result.get("handoff_channel"),
@@ -647,8 +649,27 @@ def chat_api(request):
     # Esto es crítico para el funcionamiento de multi-requirement
     if "meta" in result:
         response_data["meta"] = result.get("meta")
+        # Asegurar que requirement_options también esté en meta si existe
+        if "requirement_options" in result and "requirement_options" not in response_data["meta"]:
+            response_data["meta"]["requirement_options"] = result.get("requirement_options")
+        # Asegurar que meta.extra también tenga requirement_options
+        if "extra" in result and "requirement_options" in result.get("extra", {}):
+            if "extra" not in response_data["meta"]:
+                response_data["meta"]["extra"] = {}
+            response_data["meta"]["extra"]["requirement_options"] = result.get("extra", {}).get("requirement_options")
     if "extra" in result:
         response_data["extra"] = result.get("extra")
+        # Asegurar que requirement_options esté en extra si existe en result
+        if "requirement_options" in result and "requirement_options" not in response_data["extra"]:
+            response_data["extra"]["requirement_options"] = result.get("requirement_options")
+    
+    # Debug: imprimir información sobre requirement_options
+    if response_data.get("needs_requirement_selection"):
+        print(f"🔍 [Views] needs_requirement_selection=True")
+        print(f"   requirement_options (nivel superior): {len(response_data.get('requirement_options', []))} opciones")
+        print(f"   requirement_options (meta): {len(response_data.get('meta', {}).get('requirement_options', []))} opciones")
+        print(f"   requirement_options (meta.extra): {len(response_data.get('meta', {}).get('extra', {}).get('requirement_options', []))} opciones")
+        print(f"   requirement_options (extra): {len(response_data.get('extra', {}).get('requirement_options', []))} opciones")
     
     # También incluir requirements y current_requirement_index en el nivel superior para máxima compatibilidad
     if "requirements" in result:

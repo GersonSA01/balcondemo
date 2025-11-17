@@ -1,0 +1,15 @@
+[
+  {
+    "tipo": "RETIRO_DEFINITIVO",
+    "periodo_academico": "2025-2",
+    "fecha_inicio": "2025-09-15",
+    "fecha_fin": "2025-09-28"
+  },
+  {
+    "tipo": "RETIRO_FUERZA_MAYOR",
+    "periodo_academico": "2025-2",
+    "fecha_inicio": "2025-09-29",
+    "fecha_fin": "2025-11-09"
+  }
+]
+

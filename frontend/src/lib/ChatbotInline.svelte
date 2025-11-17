@@ -10,6 +10,8 @@
   let profileId = null;
   let needsConfirmation = false;
   let needsRelatedRequestSelection = false;
+  let needsRequirementSelection = false; // Flag para mostrar selección de requerimientos
+  let requirementOptions = []; // Opciones de requerimientos para mostrar como botones
   let relatedRequests = [];
   let selectedRelatedRequestId = "none"; // ID de la solicitud relacionada seleccionada (por defecto "none")
   let abortController = null;
@@ -23,6 +25,8 @@
   let showingDelayedMessage = false; // Flag para indicar que se está mostrando un mensaje con delay
   let showMultiReqMenu = false; // Flag para mostrar menú de multi-requirement
   let multiReqOptions = []; // Opciones del menú de multi-requirement
+  let menuMessageCreated = false; // Flag para evitar crear mensaje del menú duplicado
+  let hasActiveMultiReqMenu = false; // Flag para bloquear input cuando hay menú activo
   
   // Constantes para delays
   const GREETING_DELAY = 600; // 600ms para saludos
@@ -184,6 +188,238 @@
   }
 
   // Manejo de selección de solicitud relacionada
+  async function handleRequirementSelection(optionId, optionData = null) {
+    if (sending) return; // Evitar múltiples clics
+    
+    sending = true;
+    needsRequirementSelection = false;
+    abortController = new AbortController();
+    
+    // Determinar qué mensaje enviar según la opción seleccionada
+    let userMessage = "";
+    let messageToSend = "";
+    
+    if (optionId === "reformulate") {
+      userMessage = "Ninguno, quiero reformular";
+      messageToSend = "reformulate";
+    } else {
+      // Si se pasó optionData directamente, usarlo
+      let selectedOption = optionData;
+      
+      // Si no, buscar en requirementOptions global
+      if (!selectedOption) {
+        selectedOption = requirementOptions.find(opt => opt.id === optionId);
+      }
+      
+      // Si aún no se encuentra, buscar en el último mensaje del bot
+      if (!selectedOption && messages.length > 0) {
+        const lastBotMessage = [...messages].reverse().find(m => m.who === "bot" && m.meta);
+        if (lastBotMessage) {
+          const options = lastBotMessage.meta?.requirement_options || lastBotMessage.meta?.extra?.requirement_options || [];
+          selectedOption = options.find(opt => opt.id === optionId);
+        }
+      }
+      
+      if (selectedOption) {
+        // Extraer el número del label (ej: "1. Consultar proceso..." -> "1")
+        const match = selectedOption.label.match(/^(\d+)\.\s*(.+)/);
+        if (match) {
+          const reqNumber = match[1];
+          const reqText = match[2]; // Texto completo del requerimiento
+          // Enviar solo el número para que el backend lo procese correctamente
+          // El backend usará el número para encontrar el requerimiento y usar su original_user_message
+          userMessage = reqText; // Mostrar el texto completo al usuario
+          messageToSend = reqNumber; // Enviar solo el número al backend
+        } else {
+          userMessage = selectedOption.label;
+          messageToSend = selectedOption.label;
+        }
+      } else {
+        // Fallback: usar el ID directamente
+        userMessage = optionId;
+        messageToSend = optionId;
+      }
+    }
+    
+    messages = [...messages, { who:"user", text: userMessage }];
+    queueMicrotask(() => {
+      const el = document.getElementById("chat-body-inline");
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    
+    try {
+      const history = formatHistoryForBackend();
+      const requestBody = { 
+        message: messageToSend,
+        history: history
+      };
+      
+      if (currentCategory && currentSubcategory) {
+        requestBody.category = currentCategory;
+        requestBody.subcategory = currentSubcategory;
+      }
+      
+      if (studentData) {
+        requestBody.student_data = studentData;
+      }
+      if (profileType) {
+        requestBody.profile_type = profileType;
+      }
+      if (profileId) {
+        requestBody.perfil_id = profileId;
+      }
+      
+      const res = await fetch("/api/chat/", {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify(requestBody),
+        signal: abortController.signal
+      });
+      const data = await res.json();
+      
+      // Procesar respuesta usando la misma lógica que processMessage
+      // Actualizar el estado de pensamiento según la respuesta del backend
+      if (data.thinking_status) {
+        stopThinkingStatusUpdate();
+        thinkingStatus = data.thinking_status;
+      } else {
+        stopThinkingStatusUpdate();
+        if (data.needs_related_request_selection) {
+          startRelatedRequestsSearch();
+        } else if (data.has_information || data.source_pdfs || data.fuentes) {
+          startDocumentSearch();
+        }
+      }
+      
+      // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
+      const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
+      const shouldConfirm = data.needs_confirmation || false;
+      const isGreeting = data.is_greeting || false;
+      const isHandoff = data.handoff || data.needs_handoff_details || false;
+      const needsRelatedSelection = data.needs_related_request_selection || false;
+      const needsReqSelection = data.needs_requirement_selection || false;
+      
+      // Si es un saludo, necesita confirmación, es una respuesta operativa (handoff), necesita selección de solicitudes relacionadas, o necesita selección de requerimientos, agregar delay
+      if (isGreeting || shouldConfirm || isHandoff || needsRelatedSelection || needsReqSelection) {
+        showingDelayedMessage = true;
+        let delayTime = CONFIRMATION_DELAY;
+        if (isGreeting) {
+          delayTime = GREETING_DELAY;
+        } else if (isHandoff) {
+          delayTime = CONFIRMATION_DELAY;
+        } else if (needsRelatedSelection) {
+          delayTime = CONFIRMATION_DELAY;
+        } else if (needsReqSelection) {
+          delayTime = CONFIRMATION_DELAY;
+        }
+        setTimeout(() => {
+          // Debug: verificar datos recibidos
+          console.log("🔍 [Debug] Datos recibidos para mensaje con requirement selection:", {
+            needs_requirement_selection: data.needs_requirement_selection,
+            requirement_options_extra: data.extra?.requirement_options,
+            requirement_options_direct: data.requirement_options,
+            requirement_options_meta: data.meta?.requirement_options,
+            requirement_options_meta_extra: data.meta?.extra?.requirement_options,
+            full_data: data
+          });
+          
+          messages = [...messages, { who:"bot", text: reply, meta: data }];
+          needsConfirmation = shouldConfirm;
+          needsRequirementSelection = needsReqSelection;
+          if (data.extra?.requirement_options) {
+            requirementOptions = data.extra.requirement_options;
+          } else if (data.requirement_options) {
+            requirementOptions = data.requirement_options;
+          } else if (data.meta?.requirement_options) {
+            requirementOptions = data.meta.requirement_options;
+          } else if (data.meta?.extra?.requirement_options) {
+            requirementOptions = data.meta.extra.requirement_options;
+          } else {
+            requirementOptions = [];
+          }
+          showingDelayedMessage = false;
+          
+          queueMicrotask(() => {
+            const el = document.getElementById("chat-body-inline");
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }, delayTime);
+      } else {
+        // Sin delay para respuestas normales
+        messages = [...messages, { who:"bot", text: reply, meta: data }];
+        needsConfirmation = false;
+        needsRequirementSelection = needsReqSelection;
+        if (data.extra?.requirement_options) {
+          requirementOptions = data.extra.requirement_options;
+        } else {
+          requirementOptions = [];
+        }
+      }
+      
+      needsRelatedRequestSelection = needsRelatedSelection;
+      if (data.related_requests) {
+        relatedRequests = data.related_requests;
+        selectedRelatedRequestId = "none";
+      }
+      
+      // Detectar handoff enviado y cerrar chat
+      if (data.handoff_sent && data.close_chat) {
+        conversationBlocked = true;
+      }
+      
+      // Detectar si se necesita más detalles de handoff
+      if (data.needs_handoff_details) {
+        conversationBlocked = false;
+        needsHandoffFile = data.needs_handoff_file || false;
+      } else {
+        needsHandoffFile = false;
+        selectedFile = null;
+        if (fileInputRef) {
+          fileInputRef.value = "";
+        }
+      }
+      
+      if (data.handoff_sent) {
+        needsHandoffFile = false;
+        selectedFile = null;
+        if (fileInputRef) {
+          fileInputRef.value = "";
+        }
+      }
+      
+      if (data.confirmed && data.category && data.subcategory) {
+        currentCategory = data.category;
+        currentSubcategory = data.subcategory;
+      } else if (data.confirmed === false) {
+        currentCategory = null;
+        currentSubcategory = null;
+      }
+      
+      // Detectar menú de multi-requirement
+      if (data.extra?.ui_next_step === "multi_requirement_menu") {
+        showMultiReqMenu = true;
+        multiReqOptions = data.extra.multi_requirement_options || [];
+      } else {
+        showMultiReqMenu = false;
+        multiReqOptions = [];
+      }
+    } catch (error) {
+      console.error("Error en handleRequirementSelection:", error);
+      if (error.name !== 'AbortError') {
+        messages = [...messages, { who:"bot", text:"Ocurrió un problema al procesar tu selección. Por favor, intenta nuevamente." }];
+      }
+    } finally {
+      sending = false;
+      thinkingStatus = "Pensando";
+      stopThinkingStatusUpdate();
+      abortController = null;
+      queueMicrotask(() => {
+        const el = document.getElementById("chat-body-inline");
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+  }
+
   async function selectRelatedRequest(requestId = null){
     sending = true;
     needsRelatedRequestSelection = false;
@@ -277,6 +513,12 @@
         setTimeout(() => {
           messages = [...messages, { who:"bot", text: reply, meta: data }];
           needsConfirmation = shouldConfirm;
+          needsRequirementSelection = data.needs_requirement_selection || false;
+          if (data.extra?.requirement_options) {
+            requirementOptions = data.extra.requirement_options;
+          } else {
+            requirementOptions = [];
+          }
           showingDelayedMessage = false;
           
           queueMicrotask(() => {
@@ -288,12 +530,24 @@
         // Sin delay para respuestas normales
         messages = [...messages, { who:"bot", text: reply, meta: data }];
         needsConfirmation = false;
+        needsRequirementSelection = data.needs_requirement_selection || false;
+        if (data.extra?.requirement_options) {
+          requirementOptions = data.extra.requirement_options;
+        } else {
+          requirementOptions = [];
+        }
       }
       
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
+      needsRequirementSelection = data.needs_requirement_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
         selectedRelatedRequestId = "none"; // Resetear selección a "No hay solicitud relacionada" cuando se reciben nuevas solicitudes
+      }
+      if (data.extra?.requirement_options) {
+        requirementOptions = data.extra.requirement_options;
+      } else {
+        requirementOptions = [];
       }
       
       // Detectar si se necesita más detalles de handoff (para solicitudes relacionadas también)
@@ -321,14 +575,69 @@
         currentCategory = data.category;
         currentSubcategory = data.subcategory;
       }
+      
+      // Detectar menú de multi-requirement (después de respuesta de PrivateGPT)
+      // Crear un mensaje separado para el menú si hay más requerimientos
+      if (data.extra?.has_more_requirements && data.extra?.ui_next_step === "multi_requirement_menu") {
+        multiReqOptions = data.extra.multi_requirement_options || [];
+        hasActiveMultiReqMenu = true; // Activar flag para bloquear input
+        console.log("📋 [Multi-Req] Menú detectado, creando mensaje separado:", { options: multiReqOptions.length, menuMessageCreated });
+        
+        // Verificar que no exista ya un mensaje de menú para evitar duplicación
+        const hasMenuMessage = messages.some(m => m.meta?.is_multi_req_menu === true);
+        
+        if (!hasMenuMessage && !menuMessageCreated) {
+          menuMessageCreated = true; // Marcar como creado para evitar duplicación
+          
+          // Extraer el texto del siguiente requerimiento desde las opciones del menú
+          const nextReqOption = multiReqOptions.find(opt => opt.id === "go_next_requirement");
+          const nextReqText = nextReqOption ? nextReqOption.label.replace("Pasar al siguiente requerimiento: ", "") : "otro requerimiento";
+          
+          // Crear mensaje separado para el menú después de un pequeño delay
+          setTimeout(() => {
+            // Verificar nuevamente antes de crear (por si acaso se creó en otro lugar)
+            const stillHasMenuMessage = messages.some(m => m.meta?.is_multi_req_menu === true);
+            if (!stillHasMenuMessage) {
+              const menuMessage = {
+                who: "bot",
+                text: `Además, en tu mensaje también mencionaste otro requerimiento: ${nextReqText}. ¿Qué deseas hacer ahora?`,
+                meta: {
+                  is_multi_req_menu: true,
+                  multi_requirement_options: multiReqOptions,
+                  requirements: data.extra.requirements,
+                  current_requirement_index: data.extra.current_requirement_index
+                }
+              };
+              messages = [...messages, menuMessage];
+              
+              queueMicrotask(() => {
+                const el = document.getElementById("chat-body-inline");
+                if (el) el.scrollTop = el.scrollHeight;
+              });
+            }
+          }, 500); // Delay de 500ms para que aparezca después de la respuesta
+        }
+      } else {
+        // Resetear si no hay más requerimientos
+        if (!data.extra?.has_more_requirements) {
+          showMultiReqMenu = false;
+          multiReqOptions = [];
+          menuMessageCreated = false; // Resetear flag cuando no hay más requerimientos
+          hasActiveMultiReqMenu = false; // Desactivar flag para desbloquear input
+        }
+      }
     }catch(e){
       if (e.name === 'AbortError') return;
-      messages = [...messages, { who:"bot", text:"Ocurrió un problema al procesar tu solicitud." }];
+      console.error("Error en processMessage:", e);
+      const errorMessage = e.message || "Ocurrió un problema al procesar tu solicitud.";
+      messages = [...messages, { who:"bot", text: errorMessage }];
     }finally{
       sending = false;
       thinkingStatus = "Pensando"; // Resetear al estado por defecto
       stopThinkingStatusUpdate(); // Asegurar que se detenga el intervalo
-      abortController = null;
+      if (abortController) {
+        abortController = null;
+      }
       queueMicrotask(() => {
         const el = document.getElementById("chat-body-inline");
         if (el) el.scrollTop = el.scrollHeight;
@@ -370,10 +679,69 @@
   
   // Función para manejar clics en botones de multi-requirement
   async function handleMultiReqClick(action) {
-    showMultiReqMenu = false;
+    if (sending) return; // Evitar múltiples clics
     
-    // Enviar acción de control sin texto real (usar carácter especial)
-    await processMessage("⎈", action);
+    showMultiReqMenu = false;
+    menuMessageCreated = false; // Resetear flag
+    hasActiveMultiReqMenu = false; // Desactivar flag para desbloquear input
+    
+    // Encontrar el mensaje del menú para obtener el siguiente requerimiento
+    const menuMessage = messages.find(m => m.meta?.is_multi_req_menu === true);
+    let userMessageText = "";
+    
+    // Si la acción es "go_next_requirement", obtener el texto del siguiente requerimiento
+    if (action === "go_next_requirement" && menuMessage?.meta?.multi_requirement_options) {
+      const nextReqOption = menuMessage.meta.multi_requirement_options.find(opt => opt.id === "go_next_requirement");
+      if (nextReqOption) {
+        // Extraer el texto del requerimiento del label
+        userMessageText = nextReqOption.label.replace("Pasar al siguiente requerimiento: ", "");
+      }
+    } else if (action === "continue_current") {
+      // Si continúa con el actual, usar el mensaje original del primer requerimiento
+      // Buscar en el historial el mensaje original del usuario
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].who === "user" && messages[i].text && messages[i].text.trim()) {
+          userMessageText = messages[i].text;
+          break;
+        }
+      }
+    }
+    
+    // Eliminar el mensaje del menú de la lista de mensajes
+    messages = messages.filter(m => !m.meta?.is_multi_req_menu);
+    
+    // Si hay un mensaje del usuario, agregarlo antes de procesar
+    if (userMessageText) {
+      messages = [...messages, { who: "user", text: userMessageText }];
+      queueMicrotask(() => {
+        const el = document.getElementById("chat-body-inline");
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+    
+    // Inicializar abortController si no existe
+    if (!abortController) {
+      abortController = new AbortController();
+    }
+    
+    sending = true;
+    thinkingKey += 1;
+    thinkingStatus = "Procesando tu selección";
+    startIntentParsing();
+    
+    try {
+      // Enviar acción de control sin texto real (usar carácter especial)
+      await processMessage("⎈", action);
+    } catch (error) {
+      console.error("Error en handleMultiReqClick:", error);
+      if (error.name !== 'AbortError') {
+        messages = [...messages, { who:"bot", text:"Ocurrió un problema al procesar tu selección. Por favor, intenta nuevamente." }];
+      }
+    } finally {
+      sending = false;
+      stopThinkingStatusUpdate();
+      abortController = null;
+    }
   }
   
   // Función para interpretar intención - solo muestra "Entendiendo el requerimiento del usuario"
@@ -479,6 +847,9 @@
         if (profileType) {
           requestBody.profile_type = profileType;
         }
+        if (profileId) {
+          requestBody.perfil_id = profileId;
+        }
         if (controlAction) {
           requestBody.control_action = controlAction;
         }
@@ -491,9 +862,26 @@
         method: "POST",
         headers: headers,
         body: body,
-        signal: abortController.signal
+        signal: abortController?.signal
       });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: errorText || `Error ${res.status}` };
+        }
+        throw new Error(errorData.error || `Error ${res.status}: ${res.statusText}`);
+      }
+      
       const data = await res.json();
+      
+      // Verificar si hay error en la respuesta
+      if (data.error) {
+        throw new Error(data.error);
+      }
       
       // Actualizar el estado de pensamiento según la respuesta del backend
       // Si el backend envía thinking_status, usarlo directamente
@@ -519,15 +907,21 @@
       const shouldConfirm = data.needs_confirmation || false;
       const isGreeting = data.is_greeting || false;
       const isHandoff = data.handoff || data.needs_handoff_details || false;
+      const needsRelatedSelection = data.needs_related_request_selection || false;
+      const needsReqSelection = data.needs_requirement_selection || false;
       
-      // Si es un saludo, necesita confirmación, o es una respuesta operativa (handoff), agregar delay
-      if (isGreeting || shouldConfirm || isHandoff) {
+      // Si es un saludo, necesita confirmación, es una respuesta operativa (handoff), necesita selección de solicitudes relacionadas, o necesita selección de requerimientos, agregar delay
+      if (isGreeting || shouldConfirm || isHandoff || needsRelatedSelection || needsReqSelection) {
         showingDelayedMessage = true;
         let delayTime = CONFIRMATION_DELAY; // Delay por defecto
         if (isGreeting) {
           delayTime = GREETING_DELAY;
         } else if (isHandoff) {
           delayTime = CONFIRMATION_DELAY; // Mismo delay que confirmación para handoff
+        } else if (needsRelatedSelection) {
+          delayTime = CONFIRMATION_DELAY; // Delay para mensaje de solicitudes relacionadas
+        } else if (needsReqSelection) {
+          delayTime = CONFIRMATION_DELAY; // Delay para mensaje de selección de requerimientos
         }
         setTimeout(() => {
           messages = [...messages, { who:"bot", text: reply, meta: data }];
@@ -545,10 +939,16 @@
         needsConfirmation = false;
       }
       
-      needsRelatedRequestSelection = data.needs_related_request_selection || false;
+      needsRelatedRequestSelection = needsRelatedSelection;
+      needsRequirementSelection = needsReqSelection;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
         selectedRelatedRequestId = "none"; // Resetear selección a "No hay solicitud relacionada" cuando se reciben nuevas solicitudes
+      }
+      if (data.extra?.requirement_options) {
+        requirementOptions = data.extra.requirement_options;
+      } else {
+        requirementOptions = [];
       }
       
       // Detectar handoff enviado y cerrar chat
@@ -592,7 +992,8 @@
         currentSubcategory = null;
       }
       
-      // Detectar menú de multi-requirement
+      // Detectar menú de multi-requirement (solo establecer variables, NO crear mensaje aquí)
+      // El mensaje se crea en send() para evitar duplicación
       if (data.extra?.ui_next_step === "multi_requirement_menu") {
         showMultiReqMenu = true;
         multiReqOptions = data.extra.multi_requirement_options || [];
@@ -739,9 +1140,15 @@
         needsConfirmation = false;
       }
       needsRelatedRequestSelection = data.needs_related_request_selection || false;
+      needsRequirementSelection = data.needs_requirement_selection || false;
       if (data.related_requests) {
         relatedRequests = data.related_requests;
         selectedRelatedRequestId = "none"; // Resetear selección a "No hay solicitud relacionada" cuando se reciben nuevas solicitudes
+      }
+      if (data.extra?.requirement_options) {
+        requirementOptions = data.extra.requirement_options;
+      } else {
+        requirementOptions = [];
       }
       
       // Detectar si se necesita más detalles de handoff (para confirmaciones también)
@@ -840,6 +1247,33 @@
                 ¿Deseas relacionar tu solicitud actual con alguna de estas? Si ninguna es relevante, puedes continuar sin relacionar.
               </div>
             </div>
+          {:else if m.who === "bot" && m.meta?.needs_requirement_selection}
+            {@const reqOptions = m.meta?.requirement_options || m.meta?.extra?.requirement_options || []}
+            {#if reqOptions.length > 0}
+              <!-- Selección de requerimientos (botones numerados) -->
+              <div class="requirement-selection-message">
+                <div class="requirement-selection-intro">{m.text}</div>
+                <div class="requirement-buttons">
+                  {#each reqOptions as option}
+                  <button 
+                    class="requirement-btn"
+                    on:click={() => handleRequirementSelection(option.id, option)}
+                    disabled={sending}
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+                </div>
+              </div>
+            {:else}
+              <!-- Debug: mostrar mensaje si no hay opciones -->
+              <div class="message-text">{m.text}</div>
+              <div style="font-size: 0.8rem; color: #999; margin-top: 8px;">
+                ⚠️ Debug: needs_requirement_selection=true pero no hay requirement_options
+                <br>meta keys: {Object.keys(m.meta || {}).join(", ")}
+                <br>meta.extra keys: {Object.keys(m.meta?.extra || {}).join(", ")}
+              </div>
+            {/if}
           {:else}
             <div class="message-text">{m.text}</div>
           {/if}
@@ -884,8 +1318,24 @@
             </div>
           {/if}
           
-          {#if m.who === "bot" && idx === messages.length - 1 && showMultiReqMenu && multiReqOptions.length > 0}
-            <!-- Menú de multi-requirement -->
+          {#if m.who === "bot" && m.meta?.is_multi_req_menu && m.meta?.multi_requirement_options && m.meta.multi_requirement_options.length > 0}
+            <!-- Menú de multi-requirement (mensaje separado) -->
+            <div class="multi-req-menu">
+              <div class="multi-req-intro">{m.text}</div>
+              <div class="multi-req-buttons">
+                {#each m.meta.multi_requirement_options as option}
+                  <button 
+                    class="multi-req-btn"
+                    on:click={() => handleMultiReqClick(option.id)}
+                    disabled={sending}
+                  >
+                    {option.label}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {:else if m.who === "bot" && idx === messages.length - 1 && showMultiReqMenu && multiReqOptions.length > 0}
+            <!-- Menú de multi-requirement (fallback para compatibilidad) -->
             <div class="multi-req-menu">
               <div class="multi-req-intro">¿Qué quieres hacer ahora?</div>
               <div class="multi-req-buttons">
@@ -983,6 +1433,33 @@
           Continuar
         </button>
       </div>
+    {:else if needsRequirementSelection && requirementOptions.length > 0}
+      <!-- Mostrar botones de selección de requerimientos -->
+      <div class="requirement-selection-container">
+        <div class="requirement-buttons">
+          {#each requirementOptions as option}
+            <button 
+              class="requirement-btn"
+              on:click={() => handleRequirementSelection(option.id)}
+              disabled={sending}
+            >
+              {option.label}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {:else if hasActiveMultiReqMenu}
+        <!-- Input bloqueado cuando hay menú de multi-requirement activo -->
+        <div class="input-row">
+          <textarea rows="2" value="" disabled
+            placeholder="Por favor selecciona una opción del menú"></textarea>
+          <button class="send-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
     {:else}
         <div class="input-row">
           <textarea rows="2" bind:value={input}
@@ -1998,6 +2475,56 @@
 .multi-req-btn:disabled{
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Estilos para selección de requerimientos */
+.requirement-selection-container {
+  margin-top: 12px;
+}
+
+.requirement-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.requirement-btn {
+  padding: 12px 16px;
+  background: white;
+  border: 2px solid #1b66d1;
+  border-radius: 8px;
+  color: #1b66d1;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+  width: 100%;
+}
+
+.requirement-btn:hover:not(:disabled) {
+  background: #1b66d1;
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(27, 102, 209, 0.2);
+}
+
+.requirement-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Estilos para selección de requerimientos en el mensaje del bot */
+.requirement-selection-message {
+  margin-top: 12px;
+}
+
+.requirement-selection-intro {
+  margin-bottom: 12px;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: #333;
 }
 
 @keyframes buttonsSlideIn{

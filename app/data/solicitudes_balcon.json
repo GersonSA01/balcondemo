@@ -436,6 +436,144 @@
           "descripcion": "SOLICITUD GENERAL"
         }
       }
+    },
+    {
+      "id": 20,
+      "codigo": "SOL-GEN-202511-000020",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117142343.pdf",
+      "descripcion": "NECESITO CAMBIA DE CARRERA",
+      "numero": 18,
+      "fecha_creacion": "2025-11-17T14:23:43.482824",
+      "fecha_modificacion": "2025-11-17T14:23:43.482824",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "codigo": "SOL-GEN-202511-000021",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117152011.pdf",
+      "descripcion": "QUIEOR CAMBIAR DE CARRERA",
+      "numero": 19,
+      "fecha_creacion": "2025-11-17T15:20:11.106918",
+      "fecha_modificacion": "2025-11-17T15:20:11.106918",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "codigo": "SOL-GEN-202511-000022",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117153931.pdf",
+      "descripcion": "BGF",
+      "numero": 20,
+      "fecha_creacion": "2025-11-17T15:39:31.223283",
+      "fecha_modificacion": "2025-11-17T15:39:31.223283",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "codigo": "SOL-GEN-202511-000023",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117155715.pdf",
+      "descripcion": "GRH",
+      "numero": 21,
+      "fecha_creacion": "2025-11-17T15:57:15.982698",
+      "fecha_modificacion": "2025-11-17T15:57:15.982698",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 24,
+      "codigo": "SOL-GEN-202511-000024",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117163047.pdf",
+      "descripcion": "YAA",
+      "numero": 22,
+      "fecha_creacion": "2025-11-17T16:30:47.064976",
+      "fecha_modificacion": "2025-11-17T16:30:47.064976",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 25,
+      "codigo": "SOL-GEN-202511-000025",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117163425.pdf",
+      "descripcion": "ZAZ",
+      "numero": 23,
+      "fecha_creacion": "2025-11-17T16:34:25.457771",
+      "fecha_modificacion": "2025-11-17T16:34:25.457771",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
     }
   ],
   "historiales": [
@@ -685,10 +823,88 @@
       "archivo": null,
       "fecha_creacion": "2025-11-17T11:06:52.986786",
       "servicio": "Solicitud General"
+    },
+    {
+      "id": 20,
+      "solicitud_id": 20,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T14:23:43.482824",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 21,
+      "solicitud_id": 21,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T15:20:11.106918",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 22,
+      "solicitud_id": 22,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T15:39:31.223283",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 23,
+      "solicitud_id": 23,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T15:57:15.982698",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 24,
+      "solicitud_id": 24,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T16:30:47.064976",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 25,
+      "solicitud_id": 25,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T16:34:25.457771",
+      "servicio": "Solicitud General"
     }
   ],
   "requisitos": [],
-  "next_id": 20,
-  "next_historial_id": 20,
+  "next_id": 26,
+  "next_historial_id": 26,
   "next_requisito_id": 1
 }
