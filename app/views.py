@@ -1,5 +1,5 @@
 from django.shortcuts import render
-from django.http import JsonResponse, FileResponse, Http404
+from django.http import JsonResponse, FileResponse, Http404, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
 from pathlib import Path
@@ -8,6 +8,30 @@ import os
 
 def balcon_view(request):
     return render(request, 'app/index.html')
+
+def service_worker(request):
+    """Sirve el service-worker.js desde frontend/public/"""
+    try:
+        # Ruta al service-worker.js en frontend/public
+        sw_path = Path(__file__).resolve().parent.parent / 'frontend' / 'public' / 'service-worker.js'
+        
+        if not sw_path.exists():
+            # Si no existe, devolver un service worker vacío que se desregistre
+            return HttpResponse(
+                "// Service worker placeholder\nself.addEventListener('activate', function(event) { event.waitUntil(self.registration.unregister()); });",
+                content_type='application/javascript'
+            )
+        
+        with open(sw_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        return HttpResponse(content, content_type='application/javascript')
+    except Exception as e:
+        # En caso de error, devolver un service worker que se desregistre
+        return HttpResponse(
+            "// Service worker error handler\nself.addEventListener('activate', function(event) { event.waitUntil(self.registration.unregister()); });",
+            content_type='application/javascript'
+        )
 
 def taxonomia_api(request):
     """Endpoint para servir la taxonomía desde el JSON."""
