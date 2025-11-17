@@ -109,8 +109,10 @@ class PrivateGPTClient:
                 response.raise_for_status()
                 result = response.json()
                 
-                # Limpiar archivos temporales después de ingestión exitosa
-                self._cleanup_tmp_files()
+                # Limpiar archivos temporales después de ingestión exitosa (en segundo plano)
+                import threading
+                cleanup_thread = threading.Thread(target=self._cleanup_tmp_files, daemon=True)
+                cleanup_thread.start()
                 
                 return result
         except requests.exceptions.RequestException as e:
@@ -247,8 +249,10 @@ class PrivateGPTClient:
             response.raise_for_status()
             result = response.json()
             
-            # Limpiar archivos temporales después de ingestión exitosa
-            self._cleanup_tmp_files()
+            # Limpiar archivos temporales después de ingestión exitosa (en segundo plano)
+            import threading
+            cleanup_thread = threading.Thread(target=self._cleanup_tmp_files, daemon=True)
+            cleanup_thread.start()
             
             return result
         except requests.exceptions.RequestException as e:
@@ -263,7 +267,8 @@ class PrivateGPTClient:
         use_context: bool = True,
         include_sources: bool = True,
         stream: bool = False,
-        session_context: Optional[Dict[str, Any]] = None
+        session_context: Optional[Dict[str, Any]] = None,
+        context_filter: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Envía un mensaje al chat de PrivateGPT con contexto de documentos.
@@ -316,6 +321,8 @@ class PrivateGPTClient:
             }
             if session_context:
                 data["session_context"] = session_context
+            if context_filter:
+                data["context_filter"] = context_filter
             
             endpoint_url = f"{self.base_url}/v1/chat/completions"
             print(f"📤 [PrivateGPT] Haciendo POST a: {endpoint_url}")

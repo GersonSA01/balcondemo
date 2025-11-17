@@ -613,7 +613,8 @@ def chat_api(request):
     reply = reply.replace("**", "").strip()
     
 
-    return JsonResponse({
+    # Construir respuesta base
+    response_data = {
         "message": reply,  # Campo legacy para compatibilidad
         "response": reply,  # Campo nuevo (formato PrivateGPT) - mismo contenido que message
         "category": result.get("category"),
@@ -640,7 +641,28 @@ def chat_api(request):
         "handoff_file_types": result.get("handoff_file_types", []),
         "department": result.get("department"),  # Departamento al que se deriva
         "thinking_status": result.get("thinking_status"),  # Estado de pensamiento dinámico
-    }, status=200)
+    }
+    
+    # IMPORTANTE: Incluir meta y extra para que el frontend pueda guardarlos en el historial
+    # Esto es crítico para el funcionamiento de multi-requirement
+    if "meta" in result:
+        response_data["meta"] = result.get("meta")
+    if "extra" in result:
+        response_data["extra"] = result.get("extra")
+    
+    # También incluir requirements y current_requirement_index en el nivel superior para máxima compatibilidad
+    if "requirements" in result:
+        response_data["requirements"] = result.get("requirements")
+    if "current_requirement_index" in result:
+        response_data["current_requirement_index"] = result.get("current_requirement_index")
+    
+    # Campos adicionales para multi-requirement menu
+    if "ui_next_step" in result:
+        response_data["ui_next_step"] = result.get("ui_next_step")
+    if "multi_requirement_options" in result:
+        response_data["multi_requirement_options"] = result.get("multi_requirement_options")
+    
+    return JsonResponse(response_data, status=200)
 
 
 def serve_pdf(request, pdf_path):

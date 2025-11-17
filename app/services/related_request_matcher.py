@@ -24,6 +24,7 @@ except ImportError:
 # Constantes para el sistema de embeddings
 MAX_SOLICITUDES_RECIENTES = 150    # Tope duro por estudiante para considerar
 MAX_SOLICITUDES_CANDIDATAS = 30    # Máximo de candidatas a seleccionar (top-K después de ranking semántico)
+MIN_SIMILARITY_THRESHOLD = 0.40    # Umbral mínimo de similitud coseno para considerar una solicitud como relacionada
 
 @lru_cache(maxsize=1)
 def get_solicitudes_embedding_model() -> Optional['SentenceTransformer']:
@@ -194,21 +195,43 @@ def select_candidate_requests_with_embeddings(
         # Similitud coseno: como ya están normalizados, es simplemente el dot product
         sims = np.dot(sols_emb, query_emb)  # (N,)
 
-        # No usar umbral fijo - tomar las top-K más similares sin filtrar
-        # El modelo de embeddings multilingüe captura similitudes semánticas naturalmente
-        # Similar a cómo PrivateGPT usa top_k sin umbral estricto
+        # ✅ FILTRAR POR UMBRAL MÍNIMO DE SIMILITUD
+        # Solo considerar solicitudes con similitud >= MIN_SIMILARITY_THRESHOLD
+        # Esto evita retornar solicitudes que no tienen nada que ver
         
-        # Combinar score + fecha para ordenar
+        # Combinar score + fecha para ordenar, pero solo las que pasan el umbral
         scored = []
         for solicitud, sim in zip(recientes, sims):
-            fecha = _parse_fecha(solicitud.get("fecha_creacion"))
-            scored.append((float(sim), fecha, solicitud))
+            sim_float = float(sim)
+            # Filtrar por umbral mínimo de similitud
+            if sim_float >= MIN_SIMILARITY_THRESHOLD:
+                fecha = _parse_fecha(solicitud.get("fecha_creacion"))
+                scored.append((sim_float, fecha, solicitud))
 
         # Ordenar por similitud desc, luego fecha desc
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-        # Seleccionar top K (las más similares semánticamente)
+        # Seleccionar top K (las más similares semánticamente que pasaron el umbral)
         candidatos = [item[2] for item in scored[:max_candidates]]
+        
+        # Log de cuántas solicitudes pasaron el umbral
+        total_con_umbral = len(scored)
+        if total_con_umbral < len(recientes):
+            print(f"   🔍 Filtrando por umbral mínimo: {total_con_umbral} de {len(recientes)} solicitudes pasaron el umbral de similitud {MIN_SIMILARITY_THRESHOLD:.2f}")
+        
+        # Si no hay suficientes candidatos que pasen el umbral, informar
+        if len(candidatos) == 0:
+            print(f"   ⚠️ No se encontraron solicitudes con similitud >= {MIN_SIMILARITY_THRESHOLD:.2f}")
+            print(f"   📊 Similitudes encontradas (top 3):")
+            # Mostrar las top 3 similitudes aunque no pasen el umbral para debugging
+            scored_all = []
+            for solicitud, sim in zip(recientes, sims):
+                fecha = _parse_fecha(solicitud.get("fecha_creacion"))
+                scored_all.append((float(sim), fecha, solicitud))
+            scored_all.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            for i, (sim, _, sol) in enumerate(scored_all[:3], 1):
+                desc = sol.get("descripcion", "")[:60] or "Sin descripción"
+                print(f"      {i}. Sim={sim:.3f} | ID={sol.get('id')} | {desc}...")
         
         print(f"📊 Top {len(candidatos)} solicitudes seleccionadas por similitud semántica (de {len(recientes)} recientes)")
 
@@ -330,7 +353,8 @@ def _priorize_requests_by_code(solicitudes: List[Dict[str, Any]]) -> List[Dict[s
 
 def build_user_message_from_candidates(
     candidates: List[Dict[str, Any]],
-    max_results: int = 3
+    max_results: int = 3,
+    requirement_text: Optional[str] = None
 ) -> tuple:
     """
     Construye el mensaje para el usuario y la lista de IDs relacionados
@@ -339,6 +363,7 @@ def build_user_message_from_candidates(
     Args:
         candidates: Lista de solicitudes candidatas (ya rankeadas por embeddings)
         max_results: Máximo de solicitudes a mostrar
+        requirement_text: Texto del requerimiento específico para incluir en el mensaje
     
     Returns:
         Tuple: (related_ids, user_message, reasoning, no_related)
@@ -360,7 +385,11 @@ def build_user_message_from_candidates(
     
     # Extraer información y construir mensaje con formato mejorado
     related_ids = []
-    lines = ["He encontrado algunas solicitudes previas que podrían estar relacionadas:\n"]
+    # Incluir el requerimiento específico en el mensaje si está disponible
+    if requirement_text:
+        lines = [f"He encontrado algunas solicitudes previas que podrían estar relacionadas con **{requirement_text}**:\n"]
+    else:
+        lines = ["He encontrado algunas solicitudes previas que podrían estar relacionadas:\n"]
     
     for i, solicitud in enumerate(final_candidates, 1):
         req_id = solicitud.get("id")
@@ -504,10 +533,20 @@ def find_related_requests(
         desc = (sol.get("descripcion") or "")[:60] if sol.get("descripcion") else "Sin descripción"
         print(f"   {i}. ID: {sol.get('id')} | Código: {codigo} | {desc}...")
     
+    # Obtener el texto del requerimiento específico desde intent_slots si está disponible
+    requirement_text = None
+    if intent_slots:
+        # Usar intent_short como texto del requerimiento específico
+        requirement_text = intent_slots.get("intent_short", "")
+        # Si no hay intent_short, usar el user_request original (puede ser el mensaje específico)
+        if not requirement_text:
+            requirement_text = user_request
+    
     # Construir mensaje y seleccionar IDs sin LLM
     related_ids, user_message, reasoning, no_related = build_user_message_from_candidates(
         solicitudes,
-        max_results=max_results
+        max_results=max_results,
+        requirement_text=requirement_text
     )
     
     print(f"\n✅ RESULTADO (sin LLM):")
