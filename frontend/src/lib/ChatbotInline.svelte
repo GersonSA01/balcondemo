@@ -27,6 +27,10 @@
   let multiReqOptions = []; // Opciones del menú de multi-requirement
   let menuMessageCreated = false; // Flag para evitar crear mensaje del menú duplicado
   let hasActiveMultiReqMenu = false; // Flag para bloquear input cuando hay menú activo
+  const DEFAULT_CLASSIFICATION_CONF = { cat: null, sub: null, dep: null };
+  let currentDepartment = null;
+  let classificationConfidence = { ...DEFAULT_CLASSIFICATION_CONF };
+  const DEFAULT_DEPARTMENT_LABEL = "Asistente Virtual";
   
   // Constantes para delays
   const GREETING_DELAY = 600; // 600ms para saludos
@@ -66,6 +70,8 @@
     needsRelatedRequestSelection = false;
     relatedRequests = [];
     selectedRelatedRequestId = "none";
+    currentDepartment = null;
+    classificationConfidence = { ...DEFAULT_CLASSIFICATION_CONF };
     
     // Agregar delay antes de mostrar el saludo
     showingDelayedMessage = true;
@@ -88,6 +94,87 @@
     }
     if (profileMeta && profileMeta.profileId) {
       profileId = profileMeta.profileId;
+    }
+  }
+
+  function extractIntentSlots(data) {
+    if (!data) return null;
+    if (data.intent_slots && Object.keys(data.intent_slots).length) {
+      return data.intent_slots;
+    }
+    if (data.meta?.intent_slots && Object.keys(data.meta.intent_slots).length) {
+      return data.meta.intent_slots;
+    }
+    if (data.meta?.extra?.intent_slots && Object.keys(data.meta.extra.intent_slots).length) {
+      return data.meta.extra.intent_slots;
+    }
+    return null;
+  }
+
+  function updateHeaderClassification(data) {
+    if (!data) {
+      console.log("🔍 [Classification] Sin data para actualizar header");
+      return;
+    }
+    const slots = extractIntentSlots(data) || {};
+    const extra = data.extra || data.meta?.extra || {};
+    const classificationExtra = data.classification_from_logs || extra.classification_from_logs || slots.classification_from_logs;
+    console.log("🔍 [Classification] Datos recibidos:", {
+      dataKeys: Object.keys(data || {}),
+      classificationExtra,
+      slots,
+      extra,
+      category: data.category || classificationExtra?.category || slots.category,
+      subcategory: data.subcategory || classificationExtra?.subcategory || slots.subcategory,
+      department:
+        data.department ||
+        classificationExtra?.department ||
+        slots.department_from_logs ||
+        extra.department ||
+        extra.handoff_channel
+    });
+
+    const departmentCandidate =
+      classificationExtra?.department ||
+      slots.department_from_logs ||
+      extra.department ||
+      extra.handoff_channel ||
+      data.department ||
+      data.handoff_channel ||
+      null;
+
+    if (departmentCandidate) {
+      currentDepartment = departmentCandidate;
+    }
+
+    const categoryCandidate = classificationExtra?.category || slots.category || data.category;
+    if (categoryCandidate) {
+      currentCategory = categoryCandidate;
+    }
+
+    const subcategoryCandidate = classificationExtra?.subcategory || slots.subcategory || data.subcategory;
+    if (subcategoryCandidate) {
+      currentSubcategory = subcategoryCandidate;
+    }
+
+    const confFromSlots =
+      slots.classification_from_logs_conf ||
+      extra.classification_from_logs_conf ||
+      data.classification_from_logs_conf ||
+      null;
+    if (confFromSlots) {
+      classificationConfidence = {
+        cat: confFromSlots.cat ?? confFromSlots.category ?? null,
+        sub: confFromSlots.sub ?? confFromSlots.subcategory ?? null,
+        dep: confFromSlots.dep ?? confFromSlots.department ?? null,
+      };
+    }
+  }
+
+  $: if (messages.length) {
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg?.meta) {
+      updateHeaderClassification(lastMsg.meta);
     }
   }
 
@@ -276,6 +363,10 @@
         signal: abortController.signal
       });
       const data = await res.json();
+      updateHeaderClassification(data);
+      updateHeaderClassification(data);
+      updateHeaderClassification(data);
+      updateHeaderClassification(data);
       
       // Procesar respuesta usando la misma lógica que processMessage
       // Actualizar el estado de pensamiento según la respuesta del backend
@@ -393,6 +484,8 @@
       } else if (data.confirmed === false) {
         currentCategory = null;
         currentSubcategory = null;
+        currentDepartment = null;
+        classificationConfidence = { ...DEFAULT_CLASSIFICATION_CONF };
       }
       
       // Detectar menú de multi-requirement
@@ -990,6 +1083,8 @@
       } else if (data.confirmed === false) {
         currentCategory = null;
         currentSubcategory = null;
+        currentDepartment = null;
+        classificationConfidence = { ...DEFAULT_CLASSIFICATION_CONF };
       }
       
       // Detectar menú de multi-requirement (solo establecer variables, NO crear mensaje aquí)
@@ -1195,18 +1290,33 @@
 <div class="chat-inline-container">
   <!-- Header del chat -->
   <div class="chat-header">
-    <div style="display:flex; align-items:center; flex:1;">
-      <span class="header-title">
-        {#if currentCategory && currentSubcategory}
-          {currentCategory} > {currentSubcategory}
-        {:else if currentSubcategory}
-          {currentSubcategory}
-        {:else if currentCategory}
-          {currentCategory}
+    <div class="header-info">
+      <span class="header-label">Departamento sugerido</span>
+      <div class="department-title">
+        {#if currentDepartment}
+          {currentDepartment}
         {:else}
-          Asistente Virtual
+          {DEFAULT_DEPARTMENT_LABEL}
         {/if}
-      </span>
+      </div>
+      <div class="classification-path">
+        {#if currentCategory || currentSubcategory}
+          <span class="path-item">{currentCategory || "General"}</span>
+          {#if currentSubcategory}
+            <span class="path-separator">›</span>
+            <span class="path-item sub">{currentSubcategory}</span>
+          {/if}
+        {:else}
+          <span class="path-placeholder">Analizando tu solicitud para sugerir el mejor servicio…</span>
+        {/if}
+      </div>
+      <p class="header-helper">
+        {#if currentDepartment}
+          Sugerencia automática basada en tu mensaje. Puede cambiar mientras conversamos.
+        {:else}
+          Esta sección se actualizará automáticamente cuando detectemos el área adecuada.
+        {/if}
+      </p>
     </div>
   </div>
 
@@ -1554,14 +1664,15 @@
 
 /* Header */
 .chat-header{
-  display:flex; 
-  align-items:center; 
-  justify-content:space-between;
-  background:#0f2a57; 
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  justify-content:flex-start;
+  gap:0.35rem;
+  background:#0f2a57;
   color:#fff;
-  padding:14px 20px; 
-  font-weight:700; 
-  letter-spacing:.2px;
+  padding:16px 20px;
+  font-weight:600;
   border-radius:22px 22px 0 0;
   animation:headerSlideDown 0.4s ease-out;
 }
@@ -1577,9 +1688,60 @@
   }
 }
 
-.header-title{
-  font-size:1.1rem; 
+.header-info{
+  display:flex;
+  flex-direction:column;
+  gap:0.25rem;
+  width:100%;
+}
+
+.header-label{
+  font-size:0.72rem;
+  letter-spacing:0.08em;
+  text-transform:uppercase;
+  color:rgba(255,255,255,0.75);
+}
+
+.department-title{
+  font-size:1.2rem;
+  font-weight:700;
+  line-height:1.3;
   color:#fff;
+}
+
+.classification-path{
+  display:flex;
+  flex-wrap:wrap;
+  gap:0.35rem;
+  align-items:center;
+  font-size:0.95rem;
+  color:rgba(255,255,255,0.9);
+}
+
+.header-helper{
+  font-size:0.78rem;
+  margin-top:0.1rem;
+  color:rgba(255,255,255,0.8);
+  line-height:1.3;
+}
+
+.path-item{
+  font-weight:600;
+}
+
+.path-item.sub{
+  font-weight:500;
+  opacity:0.9;
+}
+
+.path-separator{
+  opacity:0.45;
+  font-weight:600;
+}
+
+.path-placeholder{
+  color:rgba(255,255,255,0.7);
+  font-style:italic;
 }
 
 /* Body */

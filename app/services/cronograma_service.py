@@ -44,7 +44,7 @@ def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
-def _filtrar_eventos_retiro(periodo_academico: Optional[str]) -> Dict[str, Dict]:
+def _filtrar_eventos_retiro(periodo_academico: Optional[str], fecha_hoy: Optional[date] = None) -> Dict[str, Dict]:
     """
     Devuelve un dict con las ventanas configuradas para retiro en un periodo:
 
@@ -52,34 +52,87 @@ def _filtrar_eventos_retiro(periodo_academico: Optional[str]) -> Dict[str, Dict]
       "RETIRO_DEFINITIVO": {...},
       "RETIRO_FUERZA_MAYOR": {...}
     }
+    
+    Prioridad:
+    1. Si hay periodo_academico y coincide, usar ese
+    2. Si no, buscar el cronograma más cercano a fecha_hoy (o fecha actual)
+    3. Si no hay fecha_hoy, usar el más reciente disponible
     """
+    if fecha_hoy is None:
+        fecha_hoy = date.today()
+    
     eventos = _load_cronograma_raw()
     resultado: Dict[str, Dict] = {}
-
-    if not periodo_academico:
-        return resultado
+    resultado_fallback: Dict[str, Dict] = {}  # Para cuando no hay periodo específico
+    eventos_por_tipo: Dict[str, List[Dict]] = {"RETIRO_DEFINITIVO": [], "RETIRO_FUERZA_MAYOR": []}
 
     for ev in eventos:
         try:
-            if ev.get("periodo_academico") != periodo_academico:
-                continue
-
             tipo = (ev.get("tipo") or "").upper()
             if tipo not in ("RETIRO_DEFINITIVO", "RETIRO_FUERZA_MAYOR"):
                 continue
 
             fi = _parse_date(ev["fecha_inicio"])
             ff = _parse_date(ev["fecha_fin"])
-            resultado[tipo] = {
+            
+            evento_dict = {
                 "tipo": tipo,
-                "periodo_academico": periodo_academico,
+                "periodo_academico": ev.get("periodo_academico", ""),
                 "fecha_inicio": fi,
                 "fecha_fin": ff,
             }
+            
+            # Si hay periodo específico y coincide, agregarlo al resultado
+            if periodo_academico and ev.get("periodo_academico") == periodo_academico:
+                resultado[tipo] = evento_dict
+            else:
+                # Guardar todos los eventos de este tipo para seleccionar el mejor
+                eventos_por_tipo[tipo].append(evento_dict)
         except Exception as e:
             print(f"⚠️ [Cronograma] Evento inválido en JSON: {ev} -> {e}")
             continue
 
+    # Si no encontramos eventos para el periodo específico, buscar el más cercano a fecha_hoy
+    if not resultado:
+        for tipo, lista_eventos in eventos_por_tipo.items():
+            if not lista_eventos:
+                continue
+            
+            # Buscar el evento más cercano a fecha_hoy
+            mejor_evento = None
+            menor_distancia = None
+            
+            for evento in lista_eventos:
+                fi = evento["fecha_inicio"]
+                ff = evento["fecha_fin"]
+                
+                # Si fecha_hoy está dentro del rango, ese es el mejor
+                if fi <= fecha_hoy <= ff:
+                    mejor_evento = evento
+                    break
+                # Si no, calcular distancia (preferir eventos futuros o recientes)
+                elif fecha_hoy < fi:
+                    distancia = (fi - fecha_hoy).days
+                    if menor_distancia is None or distancia < menor_distancia:
+                        menor_distancia = distancia
+                        mejor_evento = evento
+                elif fecha_hoy > ff:
+                    # Eventos pasados: preferir el más reciente
+                    distancia = (fecha_hoy - ff).days
+                    if mejor_evento is None or (mejor_evento["fecha_fin"] < ff):
+                        mejor_evento = evento
+            
+            # Si no encontramos uno mejor, usar el primero disponible
+            if mejor_evento:
+                resultado_fallback[tipo] = mejor_evento
+            elif lista_eventos:
+                resultado_fallback[tipo] = lista_eventos[0]
+        
+        if resultado_fallback:
+            periodo_usado = next(iter(resultado_fallback.values())).get("periodo_academico", "")
+            print(f"⚠️ [Cronograma] No se encontró periodo '{periodo_academico}', usando cronograma del periodo '{periodo_usado}' (más cercano a {fecha_hoy})")
+            return resultado_fallback
+    
     return resultado
 
 
@@ -98,7 +151,7 @@ def evaluar_cronograma_retiro(
 
       info: dict con fechas listas para mostrar.
     """
-    eventos = _filtrar_eventos_retiro(periodo_actual)
+    eventos = _filtrar_eventos_retiro(periodo_actual, fecha_hoy)
 
     def_fmt = eventos.get("RETIRO_DEFINITIVO")
     fm_fmt = eventos.get("RETIRO_FUERZA_MAYOR")
@@ -109,8 +162,17 @@ def evaluar_cronograma_retiro(
             return d.strftime("%d/%m/%Y")
         return ""
 
+    # Obtener periodo del cronograma (puede ser diferente al periodo_actual si no coincide)
+    periodo_cronograma = ""
+    if def_fmt:
+        periodo_cronograma = def_fmt.get("periodo_academico", periodo_actual or "")
+    elif fm_fmt:
+        periodo_cronograma = fm_fmt.get("periodo_academico", periodo_actual or "")
+    else:
+        periodo_cronograma = periodo_actual or ""
+    
     info_base = {
-        "periodo_academico": periodo_actual or "",
+        "periodo_academico": periodo_cronograma,
         "retiro_def_inicio": fmt(def_fmt["fecha_inicio"]) if def_fmt else "",
         "retiro_def_fin": fmt(def_fmt["fecha_fin"]) if def_fmt else "",
         "fuerza_mayor_inicio": fmt(fm_fmt["fecha_inicio"]) if fm_fmt else "",

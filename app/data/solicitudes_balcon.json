@@ -574,6 +574,75 @@
           "descripcion": "SOLICITUD GENERAL"
         }
       }
+    },
+    {
+      "id": 26,
+      "codigo": "SOL-GEN-202511-000026",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117205545.pdf",
+      "descripcion": "DESEO VAMBIAR SDDSADAS",
+      "numero": 24,
+      "fecha_creacion": "2025-11-17T20:55:45.136645",
+      "fecha_modificacion": "2025-11-17T20:55:45.136645",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "codigo": "SOL-GEN-202511-000027",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117205921.pdf",
+      "descripcion": "AAAAA",
+      "numero": 25,
+      "fecha_creacion": "2025-11-17T20:59:21.543640",
+      "fecha_modificacion": "2025-11-17T20:59:21.543640",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
+    },
+    {
+      "id": 28,
+      "codigo": "SOL-GEN-202511-000028",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251117210139.pdf",
+      "descripcion": "CARRERAAA",
+      "numero": 26,
+      "fecha_creacion": "2025-11-17T21:01:39.866129",
+      "fecha_modificacion": "2025-11-17T21:01:39.866129",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "Solicitud General",
+        "proceso": {
+          "id": 0,
+          "sigla": "GEN",
+          "descripcion": "SOLICITUD GENERAL"
+        }
+      }
     }
   ],
   "historiales": [
@@ -901,10 +970,62 @@
       "archivo": null,
       "fecha_creacion": "2025-11-17T16:34:25.457771",
       "servicio": "Solicitud General"
+    },
+    {
+      "id": 26,
+      "solicitud_id": 26,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T20:55:45.136645",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 27,
+      "solicitud_id": 27,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T20:59:21.543640",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 28,
+      "solicitud_id": 28,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T21:01:39.866129",
+      "servicio": "Solicitud General"
+    },
+    {
+      "id": 29,
+      "solicitud_id": 29,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-17T21:23:44.630792",
+      "servicio": "Solicitud General"
     }
   ],
   "requisitos": [],
-  "next_id": 26,
-  "next_historial_id": 26,
+  "next_id": 30,
+  "next_historial_id": 30,
   "next_requisito_id": 1
 }

@@ -1,7 +1,10 @@
 # app/services/related_request_matcher.py
 """
-Servicio para encontrar solicitudes relacionadas usando embeddings + LLM.
-Sistema optimizado: embeddings semánticos pre-filtran candidatos antes del LLM.
+Servicio para encontrar solicitudes relacionadas usando embeddings semánticos.
+Sistema optimizado: usa BrainEngine centralizado para evitar duplicación de modelos.
+
+REFACTORIZADO: Ahora usa BrainEngine en lugar de cargar su propio modelo.
+Esto ahorra ~400MB de RAM y garantiza consistencia con el sistema de clasificación.
 """
 from typing import Dict, List, Any, Optional
 import json
@@ -9,36 +12,15 @@ import re
 import unicodedata
 from pathlib import Path
 from datetime import datetime
-from functools import lru_cache
 import numpy as np
 
-try:
-    from sentence_transformers import SentenceTransformer
-    EMBEDDINGS_AVAILABLE = True
-except ImportError:
-    EMBEDDINGS_AVAILABLE = False
-    print("⚠️ [WARNING] sentence-transformers no disponible. El sistema usará modo fallback sin embeddings.")
-
-# Ya no se importa llm ni guarded_invoke porque eliminamos el LLM del matching
+# Importar BrainEngine para usar el modelo centralizado
+from .intent_classifier_trained import get_brain_engine
 
 # Constantes para el sistema de embeddings
 MAX_SOLICITUDES_RECIENTES = 150    # Tope duro por estudiante para considerar
 MAX_SOLICITUDES_CANDIDATAS = 30    # Máximo de candidatas a seleccionar (top-K después de ranking semántico)
 MIN_SIMILARITY_THRESHOLD = 0.40    # Umbral mínimo de similitud coseno para considerar una solicitud como relacionada
-
-@lru_cache(maxsize=1)
-def get_solicitudes_embedding_model() -> Optional['SentenceTransformer']:
-    """
-    Singleton del modelo de embeddings para solicitudes.
-    Modelo ligero, multilingüe, ideal para español.
-    """
-    if not EMBEDDINGS_AVAILABLE:
-        return None
-    try:
-        return SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-    except Exception as e:
-        print(f"⚠️ [WARNING] Error al cargar modelo de embeddings: {e}")
-        return None
 
 
 def _normalize_text(text: str) -> str:
@@ -143,8 +125,8 @@ def select_candidate_requests_with_embeddings(
     max_candidates: int = MAX_SOLICITUDES_CANDIDATAS,
 ) -> List[Dict[str, Any]]:
     """
-    Selecciona las solicitudes candidatas usando embeddings + similitud coseno.
-    Sistema industrial: ranking semántico antes de enviar al LLM.
+    Selecciona las solicitudes candidatas usando embeddings semánticos + similitud coseno.
+    Sistema industrial: ranking semántico puro (sin LLM).
     
     Args:
         solicitudes: Lista de todas las solicitudes del estudiante
@@ -167,10 +149,10 @@ def select_candidate_requests_with_embeddings(
     recientes = solicitudes_sorted[:max_recent]
     print(f"⚙️ [EMBED] Tomando {len(recientes)} solicitudes recientes (de {len(solicitudes)} totales)")
 
-    # Verificar si embeddings están disponibles
-    model = get_solicitudes_embedding_model()
-    if not model:
-        print("⚠️ [EMBED] Modelo de embeddings no disponible, usando solo recencia")
+    # Usar BrainEngine centralizado (evita duplicar modelo en RAM)
+    brain = get_brain_engine()
+    if not brain:
+        print("⚠️ [EMBED] BrainEngine no disponible, usando solo recencia")
         return recientes[:max_candidates]
 
     # Construir texto de consulta normalizado (sin keywords, solo semántica pura)
@@ -182,15 +164,22 @@ def select_candidate_requests_with_embeddings(
         return recientes[:max_candidates]
 
     try:
-        print("⚙️ [EMBED] Calculando embedding de la consulta (búsqueda semántica pura)...")
+        print("⚙️ [EMBED] Calculando embedding de la consulta usando BrainEngine...")
         print(f"   Consulta original: '{user_request}'")
         print(f"   Consulta normalizada: '{query_text}'")
-        query_emb = model.encode([query_text], normalize_embeddings=True, show_progress_bar=False)[0]  # shape (d,)
+        query_emb = brain.encode_text(query_text, normalize=True)  # shape (1, d)
+        if query_emb.size == 0:
+            print("⚠️ [EMBED] Error al generar embedding de consulta, usando solo recencia.")
+            return recientes[:max_candidates]
+        query_emb = query_emb[0]  # shape (d,)
 
-        # Embeddings de solicitudes
-        print(f"⚙️ [EMBED] Calculando embeddings de {len(recientes)} solicitudes...")
+        # Embeddings de solicitudes (batch para eficiencia)
+        print(f"⚙️ [EMBED] Calculando embeddings de {len(recientes)} solicitudes usando BrainEngine...")
         texts = [build_text_for_embedding(s) for s in recientes]
-        sols_emb = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)  # shape (N, d)
+        sols_emb = brain.encode_batch(texts, normalize=True)  # shape (N, d)
+        if sols_emb.size == 0:
+            print("⚠️ [EMBED] Error al generar embeddings de solicitudes, usando solo recencia.")
+            return recientes[:max_candidates]
 
         # Similitud coseno: como ya están normalizados, es simplemente el dot product
         sims = np.dot(sols_emb, query_emb)  # (N,)
@@ -237,7 +226,7 @@ def select_candidate_requests_with_embeddings(
 
         print(
             f"✅ [EMBED] Seleccionadas {len(candidatos)} solicitudes candidatas "
-            f"para enviar al LLM (de {len(recientes)} recientes, {len(solicitudes)} totales)."
+            f"por similitud semántica (de {len(recientes)} recientes, {len(solicitudes)} totales)."
         )
         
         # Log de las top 5 similitudes para debugging
@@ -290,9 +279,10 @@ def load_student_requests(student_data: Dict = None) -> List[Dict]:
 
 def format_request_for_llm(solicitud: Dict) -> str:
     """
-    Formatea una solicitud para ser enviada al LLM.
+    Formatea una solicitud para mostrar información.
     Solo incluye ID, código, fecha y descripción.
-    DEPRECADO: Ya no se usa LLM para matching, solo embeddings.
+    DEPRECADO: Ya no se usa LLM para matching, solo embeddings semánticos.
+    Esta función se mantiene por compatibilidad pero no se usa en el flujo actual.
     """
     parts = []
 
@@ -605,7 +595,7 @@ def find_related_requests(
     print(f"   - Solicitudes relacionadas encontradas: {len(related_requests)}")
     print(f"   - Límite aplicado (max_results={max_results}): {len(related_requests)}")
     print(f"{'='*80}\n")
-    
+
     return {
         "related_requests": related_requests,
         "no_related": no_related,

@@ -23,17 +23,31 @@ def determinar_departamento_handoff(
     """
     Determina el departamento al que se debe derivar la solicitud.
     
+    Prioridad:
+    1. department_from_logs (modelo entrenado en logs históricos)
+    2. Desde categoría/subcategoría
+    3. Heurísticas
+    4. Por defecto
+    
     Returns:
         Nombre del departamento
     """
-    # Intentar obtener departamento desde categoría/subcategoría
+    # Prioridad 1: Usar departamento aprendido de logs históricos (más confiable)
+    if intent_slots:
+        dept_from_logs = intent_slots.get("department_from_logs")
+        conf_dep = intent_slots.get("classification_from_logs_conf", {}).get("dep", 0.0)
+        if dept_from_logs and conf_dep >= 0.7:
+            print(f"🏢 [Handoff] Departamento desde modelo entrenado (logs): {dept_from_logs} (conf={conf_dep:.2f})")
+            return dept_from_logs
+    
+    # Prioridad 2: Intentar obtener departamento desde categoría/subcategoría
     if category and subcategory:
         depto = get_departamento_real(category, subcategory)
         if depto:
             print(f"🏢 [Handoff] Departamento desde categoría: {depto}")
             return depto
     
-    # Si hay intent_slots, usar classify_with_heuristics (sin LLM)
+    # Prioridad 3: Si hay intent_slots, usar classify_with_heuristics (sin LLM)
     if intent_slots:
         try:
             heuristic_classification = classify_with_heuristics(intent_slots)
@@ -44,7 +58,7 @@ def determinar_departamento_handoff(
         except Exception as e:
             print(f"⚠️ [Handoff] Error al usar heurísticas para determinar departamento: {e}")
     
-    # Departamento por defecto
+    # Prioridad 4: Departamento por defecto
     default_depto = "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS"
     print(f"🏢 [Handoff] Usando departamento por defecto: {default_depto}")
     return default_depto

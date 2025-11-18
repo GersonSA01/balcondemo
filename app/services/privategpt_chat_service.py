@@ -1,9 +1,10 @@
 # app/services/privategpt_chat_service.py
 """
 Servicio de chat usando PrivateGPT API - Orquestador principal.
-Flujo: Saludo → Interpretar Intención → Confirmar → Solicitudes Relacionadas → PrivateGPT API (con mensaje confirmado)
+Flujo: Saludo → Cerebro Híbrido (FAQ/Clasificación) → Confirmar → PrivateGPT API
 
-Este archivo actúa como orquestador de alto nivel, delegando la lógica específica a módulos especializados.
+Este archivo actúa como orquestador de alto nivel.
+ACTUALIZADO: Ahora utiliza brain_service para clasificación híbrida.
 """
 from typing import Dict, List, Any, Optional
 import re
@@ -44,6 +45,150 @@ from .handoff_service import (
     process_handoff_details
 )
 from .cronograma_service import evaluar_cronograma_retiro
+from .intent_classifier_trained import classify_user_intent_hybrid
+
+
+def _ensure_slot_has_classification(slot: dict | None, user_text: str):
+    """
+    Inyecta la inteligencia del modelo híbrido en los slots.
+    Si hay un FAQ Match, lo guarda en los slots para uso inmediato.
+    """
+    if not slot or not user_text:
+        return
+
+    try:
+        brain_result = classify_user_intent_hybrid(user_text)
+    except Exception as e:
+        print(f"⚠️ [Brain] Error obteniendo clasificación híbrida: {e}")
+        return
+
+    if not brain_result:
+        return
+
+    slot["classification_from_logs"] = {
+        "category": brain_result.get("category"),
+        "subcategory": brain_result.get("subcategory"),
+        "department": brain_result.get("department"),
+        "confidence": brain_result.get("confidence"),
+        "is_confident": brain_result.get("is_confident"),
+    }
+    # Usar confianzas separadas si están disponibles, sino usar la confianza principal
+    main_confidence = brain_result.get("confidence") or 0.0
+    slot["classification_from_logs_conf"] = {
+        "cat": brain_result.get("cat_conf", main_confidence),
+        "sub": brain_result.get("sub_conf", main_confidence),
+        "dep": brain_result.get("dep_conf", main_confidence),
+    }
+    slot["department_from_logs"] = brain_result.get("department")
+    slot["subcategory_from_logs"] = brain_result.get("subcategory")
+
+    print(f"\n{'='*80}")
+    print(f"🔍 [PrivateGPTChat] PROCESANDO RESULTADOS DE BRAIN")
+    print(f"{'='*80}")
+    print(f"   brain_result.category: '{brain_result.get('category')}'")
+    print(f"   brain_result.subcategory: '{brain_result.get('subcategory')}'")
+    print(f"   brain_result.department: '{brain_result.get('department')}'")
+    print(f"   brain_result.is_confident: {brain_result.get('is_confident')}")
+    print(f"   brain_result.confidence: {brain_result.get('confidence')}")
+    print(f"   slot actual category: '{slot.get('category')}'")
+    print(f"   slot actual subcategory: '{slot.get('subcategory')}'")
+
+    # Obtener valores predichos (incluso si no superan threshold)
+    predicted_category = brain_result.get("category")
+    predicted_subcategory = brain_result.get("subcategory")
+    predicted_department = brain_result.get("department")
+    
+    # Usar valores predichos si NO son "OTROS", incluso si is_confident es False
+    # Esto permite usar las clasificaciones aunque no superen el threshold estricto
+    use_predicted_values = (
+        (predicted_category and predicted_category != "OTROS") or
+        (predicted_subcategory and predicted_subcategory != "OTROS") or
+        (predicted_department and predicted_department != "OTROS")
+    )
+    
+    if brain_result.get("is_confident"):
+        print(f"   ✅ Brain result es confident (conf={brain_result.get('confidence', 0.0):.3f} >= threshold), actualizando slots...")
+        if not slot.get("category") or slot.get("category") == "OTROS":
+            slot["category"] = predicted_category
+            print(f"      → slot['category'] actualizado a: '{slot.get('category')}'")
+        else:
+            print(f"      → slot['category'] ya tiene valor: '{slot.get('category')}', NO se actualiza")
+        if not slot.get("subcategory") or slot.get("subcategory") == "OTROS":
+            slot["subcategory"] = predicted_subcategory
+            print(f"      → slot['subcategory'] actualizado a: '{slot.get('subcategory')}'")
+        else:
+            print(f"      → slot['subcategory'] ya tiene valor: '{slot.get('subcategory')}', NO se actualiza")
+    elif use_predicted_values:
+        print(f"   ⚠️ Brain result NO es confident (conf={brain_result.get('confidence', 0.0):.3f} < threshold)")
+        print(f"   ✅ PERO hay valores predichos válidos (no 'OTROS'), usando valores predichos de todas formas...")
+        if not slot.get("category") or slot.get("category") == "OTROS":
+            if predicted_category and predicted_category != "OTROS":
+                slot["category"] = predicted_category
+                print(f"      → slot['category'] actualizado a: '{slot.get('category')}' (predicho aunque confianza baja)")
+            else:
+                print(f"      → predicted_category es 'OTROS' o None, manteniendo valor actual")
+        else:
+            print(f"      → slot['category'] ya tiene valor: '{slot.get('category')}', NO se actualiza")
+        if not slot.get("subcategory") or slot.get("subcategory") == "OTROS":
+            if predicted_subcategory and predicted_subcategory != "OTROS":
+                slot["subcategory"] = predicted_subcategory
+                print(f"      → slot['subcategory'] actualizado a: '{slot.get('subcategory')}' (predicho aunque confianza baja)")
+            else:
+                print(f"      → predicted_subcategory es 'OTROS' o None, manteniendo valor actual")
+        else:
+            print(f"      → slot['subcategory'] ya tiene valor: '{slot.get('subcategory')}', NO se actualiza")
+    else:
+        print(f"   ⚠️ Brain result NO es confident (conf={brain_result.get('confidence', 0.0):.3f} < threshold)")
+        print(f"   ⚠️ Y no hay valores predichos válidos (todos son 'OTROS'), NO se actualizan slots")
+        print(f"      → slot['category'] mantiene: '{slot.get('category', 'None')}'")
+        print(f"      → slot['subcategory'] mantiene: '{slot.get('subcategory', 'None')}'")
+    
+    print(f"\n✅ [PrivateGPTChat] VALORES FINALES EN SLOT:")
+    print(f"   slot['category']: '{slot.get('category', 'None')}'")
+    print(f"   slot['subcategory']: '{slot.get('subcategory', 'None')}'")
+    print(f"   slot['department_from_logs']: '{slot.get('department_from_logs', 'None')}'")
+    print(f"   slot['subcategory_from_logs']: '{slot.get('subcategory_from_logs', 'None')}'")
+    print(f"{'='*80}\n")
+
+    faq_match = brain_result.get("faq_match")
+    if faq_match:
+        similarity = faq_match.get("similarity")
+        print(f"💡 [Brain] FAQ Match encontrado (Similitud: {similarity})")
+        slot["faq_answer_payload"] = faq_match
+
+
+def try_quick_faq_response(intent_slots: Dict, student_data: Optional[Dict]) -> Optional[Dict[str, Any]]:
+    """
+    Intenta responder inmediatamente si el cerebro encontró un FAQ Match de alta confianza.
+    Esto evita llamadas a PrivateGPT y esperas innecesarias.
+    """
+    faq_match = intent_slots.get("faq_answer_payload") if intent_slots else None
+    if not faq_match:
+        return None
+
+    answer_text = faq_match.get("answer")
+    similarity = faq_match.get("similarity", 0)
+
+    if not answer_text or similarity <= 0.82:
+        return None
+
+    primer_nombre = obtener_primer_nombre(student_data)
+    saludo = f"{primer_nombre}, " if primer_nombre else ""
+    final_msg = f"{saludo}tengo información precisa sobre esto:\n\n{answer_text}"
+
+    return build_frontend_response(
+        stage=ConversationStage.ANSWER_READY,
+        mode=ConversationMode.INFORMATIVE,
+        status=ConversationStatus.ANSWER,
+        message=final_msg,
+        response=final_msg,
+        has_information=True,
+        intent_slots=intent_slots,
+        extra={
+            "source": "knowledge_base_memory",
+            "confidence": similarity
+        }
+    )
 
 
 # ============================================================================
@@ -159,11 +304,17 @@ def _handle_retiro_asignatura_operativo(
     # 1) Obtener periodo actual del estudiante
     periodo_actual = _extraer_periodo_actual(student_data)
     hoy = date.today()
+    
+    print(f"📅 [Cronograma] Periodo del estudiante: {periodo_actual or 'No encontrado'}")
+    print(f"📅 [Cronograma] Fecha actual: {hoy}")
 
     estado, info = evaluar_cronograma_retiro(
         fecha_hoy=hoy,
         periodo_actual=periodo_actual
     )
+    
+    print(f"📅 [Cronograma] Estado: {estado}")
+    print(f"📅 [Cronograma] Info: {info}")
 
     # Helper para saludo
     primer_nombre = obtener_primer_nombre(student_data)
@@ -238,19 +389,24 @@ def _handle_retiro_asignatura_operativo(
     msg += "Según el cronograma vigente"
     if info.get("periodo_academico"):
         msg += f" para el periodo **{info['periodo_academico']}**"
-    msg += ":\n"
+    msg += ":\n\n"
 
+    tiene_fechas = False
     if info.get("retiro_def_inicio") and info.get("retiro_def_fin"):
-        msg += f"- Retiro definitivo: del {info['retiro_def_inicio']} al {info['retiro_def_fin']}\n"
+        msg += f"• **Retiro definitivo**: del {info['retiro_def_inicio']} al {info['retiro_def_fin']}\n"
+        tiene_fechas = True
     if info.get("fuerza_mayor_inicio") and info.get("fuerza_mayor_fin"):
         msg += (
-            f"- Retiro por casos fortuitos o fuerza mayor: "
+            f"• **Retiro por casos fortuitos o fuerza mayor**: "
             f"del {info['fuerza_mayor_inicio']} al {info['fuerza_mayor_fin']}\n"
         )
+        tiene_fechas = True
+    
+    if not tiene_fechas:
+        msg += "⚠️ No se encontró información de cronograma disponible.\n"
 
     msg += (
-        "\nSi tu situación es muy particular, puedo ayudarte a enviar una **solicitud general**, "
-        "pero debes saber que está **fuera de las fechas establecidas**."
+        "\nLo siento mucho 😔 ¿Hay algo más en lo que pueda ayudarte?."
     )
 
     return build_frontend_response(
@@ -334,6 +490,12 @@ def _handle_confirmation_informative(
         data_answer = maybe_answer_with_student_data(intent_slots, student_data)
         if data_answer is not None:
             return data_answer
+
+    # Intentar responder con FAQ híbrida de alta confianza
+    faq_response = try_quick_faq_response(intent_slots, student_data)
+    if faq_response:
+        print("⚡ [ChatService] Respondiendo vía FAQ Memory (sin llamar a PrivateGPT)")
+        return finish_requirement_and_maybe_next(faq_response, requirements, current_req_index)
     
     # Buscar solicitudes relacionadas
     related_requests_result = find_related_requests(
@@ -1206,26 +1368,9 @@ def classify_with_privategpt(
                                     current_req_index = 0
                 break
     
-    # 1. Procesar archivo subido si existe
+    # 1. Procesar archivo subido si existe (usar función centralizada)
     if uploaded_file:
-        try:
-            client = get_privategpt_client()
-            import tempfile
-            import os
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                for chunk in uploaded_file.chunks():
-                    tmp_file.write(chunk)
-                tmp_path = tmp_file.name
-            
-            result = client.ingest_file(tmp_path)
-            os.unlink(tmp_path)
-            
-            if result.get("success", False) or "data" in result:
-                print(f"[PrivateGPT] ✅ Archivo ingestionado: {uploaded_file.name}")
-            else:
-                print(f"[PrivateGPT] ⚠️ Error al ingestionar archivo: {result.get('error', 'Unknown')}")
-        except Exception as e:
-            print(f"[PrivateGPT] ⚠️ Error al procesar archivo: {e}")
+        _process_uploaded_file(uploaded_file)
     
     # 2. Verificar primero si el mensaje es una confirmación (antes de detectar stage)
     # Esto es importante porque "si" puede ser malinterpretado como nueva intención
@@ -1539,30 +1684,56 @@ def classify_with_privategpt(
         print(f"   uploaded_file: {uploaded_file.name if uploaded_file else 'None'}")
         print(f"   handoff_channel: {handoff_channel}")
         
+        print(f"\n{'='*80}")
+        print(f"🔍 [PrivateGPTChat] RECUPERANDO CATEGORY/SUBCATEGORY PARA HANDOFF")
+        print(f"{'='*80}")
+        print(f"   category inicial: '{category}'")
+        print(f"   subcategory inicial: '{subcategory}'")
+        print(f"   pending_slots category: '{pending_slots.get('category') if pending_slots else None}'")
+        print(f"   pending_slots subcategory: '{pending_slots.get('subcategory') if pending_slots else None}'")
+        
         # Recuperar category y subcategory desde el historial si no están disponibles
         if not category or not subcategory:
-            for msg in reversed(conversation_history):
+            print(f"   ⚠️ Category o subcategory no están disponibles, buscando en historial...")
+            for i, msg in enumerate(reversed(conversation_history)):
                 role = msg.get("role") or msg.get("who")
                 if role in ("bot", "assistant"):
                     msg_category = msg.get("category") or (msg.get("meta") or {}).get("category")
                     msg_subcategory = msg.get("subcategory") or (msg.get("meta") or {}).get("subcategory")
+                    print(f"      Mensaje {i+1} (bot): category='{msg_category}', subcategory='{msg_subcategory}'")
                     if msg_category and msg_subcategory:
                         if not category:
                             category = msg_category
+                            print(f"         → category actualizado a: '{category}'")
                         if not subcategory:
                             subcategory = msg_subcategory
+                            print(f"         → subcategory actualizado a: '{subcategory}'")
                         break
                     # También buscar en intent_slots si está disponible
                     intent_slots_msg = msg.get("intent_slots") or (msg.get("meta") or {}).get("intent_slots")
                     if intent_slots_msg and isinstance(intent_slots_msg, dict):
+                        print(f"         Intentando obtener desde intent_slots...")
                         # Intentar obtener desde slots si hay información de categoría
                         if not category and intent_slots_msg.get("category"):
                             category = intent_slots_msg.get("category")
+                            print(f"            → category desde intent_slots: '{category}'")
                         if not subcategory and intent_slots_msg.get("subcategory"):
                             subcategory = intent_slots_msg.get("subcategory")
+                            print(f"            → subcategory desde intent_slots: '{subcategory}'")
         
-        print(f"   category recuperada: {category}")
-        print(f"   subcategory recuperada: {subcategory}")
+        # También intentar obtener desde pending_slots si están disponibles
+        if pending_slots:
+            if not category and pending_slots.get("category"):
+                category = pending_slots.get("category")
+                print(f"   → category desde pending_slots: '{category}'")
+            if not subcategory and pending_slots.get("subcategory"):
+                subcategory = pending_slots.get("subcategory")
+                print(f"   → subcategory desde pending_slots: '{subcategory}'")
+        
+        print(f"\n✅ [PrivateGPTChat] VALORES FINALES RECUPERADOS:")
+        print(f"   category final: '{category}'")
+        print(f"   subcategory final: '{subcategory}'")
+        print(f"{'='*80}\n")
         
         # Verificar si el usuario ya proporcionó detalles y archivo
         details_text = (user_text or "").strip()
@@ -1725,6 +1896,18 @@ def classify_with_privategpt(
             )
             
             # Asegurar que category, subcategory, thinking_status y handoff_sent estén en el nivel superior también
+            print(f"\n{'='*80}")
+            print(f"🔍 [PrivateGPTChat] ASIGNANDO VALORES A RESPUESTA FINAL (handoff)")
+            print(f"{'='*80}")
+            print(f"   category variable: '{category}'")
+            print(f"   subcategory variable: '{subcategory}'")
+            print(f"   handoff_channel: '{handoff_channel}'")
+            print(f"   department_from_logs en slots: '{pending_slots.get('department_from_logs') if pending_slots else None}'")
+            print(f"   subcategory_from_logs en slots: '{pending_slots.get('subcategory_from_logs') if pending_slots else None}'")
+            print(f"   Valor final response['category']: '{category}'")
+            print(f"   Valor final response['subcategory']: '{subcategory}'")
+            print(f"{'='*80}\n")
+            
             response["category"] = category
             response["subcategory"] = subcategory
             response["thinking_status"] = thinking_status_handoff  # Asegurar que esté en nivel superior
@@ -2448,6 +2631,8 @@ def classify_with_privategpt(
         print(f"   Stage actual: {stage}")
         intent_slots_original = interpretar_intencion_principal(user_text)
         
+        _ensure_slot_has_classification(intent_slots_original, user_text)
+        
         # Guardar el mensaje original del usuario en los intent_slots (por si acaso no vino del LLM)
         if not intent_slots_original.get("original_user_message"):
             intent_slots_original["original_user_message"] = user_text
@@ -2475,6 +2660,9 @@ def classify_with_privategpt(
                         # Si solo hay una intención, usar el mensaje completo
                         slot_with_original["original_user_message"] = intent_slots_original.get("original_user_message", user_text)
                 
+                slot_original_message = slot_with_original.get("original_user_message") or user_text
+                _ensure_slot_has_classification(slot_with_original, slot_original_message)
+
                 # Asegurar que cada requerimiento detecte su answer_type si no está presente
                 if not slot_with_original.get("answer_type") or slot_with_original.get("answer_type") not in ("informativo", "operativo"):
                     intent_short_req = slot_with_original.get("intent_short", "")
@@ -2514,6 +2702,9 @@ def classify_with_privategpt(
                             # Si solo hay una intención, usar el mensaje completo
                             slot_with_original["original_user_message"] = intent_slots_original.get("original_user_message", user_text)
                     
+                    slot_original_message = slot_with_original.get("original_user_message") or user_text
+                    _ensure_slot_has_classification(slot_with_original, slot_original_message)
+
                     # Asegurar que cada requerimiento detecte su answer_type si no está presente
                     if not slot_with_original.get("answer_type") or slot_with_original.get("answer_type") not in ("informativo", "operativo"):
                         intent_short_req = slot_with_original.get("intent_short", "")
@@ -2539,6 +2730,8 @@ def classify_with_privategpt(
             current_req = requirements[current_req_index]
             # Usar los slots del requerimiento activo para el flujo
             intent_slots = current_req.get("slots", intent_slots_original)
+            slot_message = intent_slots.get("original_user_message") or intent_slots_original.get("original_user_message") or user_text
+            _ensure_slot_has_classification(intent_slots, slot_message)
             # Asegurar que intent_slots tenga original_user_message del requerimiento específico
             if not intent_slots.get("original_user_message"):
                 # Si hay múltiples requerimientos, usar el intent_short del requerimiento actual

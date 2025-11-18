@@ -56,6 +56,21 @@ def build_frontend_response(
     if extra:
         base.update(extra)
     
+    # Propagar datos de clasificación del modelo entrenado hacia el nivel superior
+    classification_data = None
+    classification_conf = None
+    if intent_slots:
+        classification_data = intent_slots.get("classification_from_logs")
+        classification_conf = intent_slots.get("classification_from_logs_conf")
+    if extra:
+        classification_data = extra.get("classification_from_logs", classification_data)
+        classification_conf = extra.get("classification_from_logs_conf", classification_conf)
+
+    if classification_data and "classification_from_logs" not in base:
+        base["classification_from_logs"] = classification_data
+    if classification_conf and "classification_from_logs_conf" not in base:
+        base["classification_from_logs_conf"] = classification_conf
+
     # Asegurar que meta existe si hay campos que deben ir ahí
     if "meta" not in base:
         base["meta"] = {}

@@ -1,0 +1,2 @@
+app/data/solicitudes_balcon_dump.jsonl filter=lfs diff=lfs merge=lfs -text
+models/brain_hybrid.pkl filter=lfs diff=lfs merge=lfs -text
