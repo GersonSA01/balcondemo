@@ -315,17 +315,23 @@ def _confirm_text_from_slots(sl: dict) -> str:
 
 
 def es_confirmacion_positiva(txt: str) -> bool:
-    """Detecta si el texto es una confirmación positiva."""
+    """
+    ✅ Simplificado - Solo detecta "sí" exacto (sin listas de palabras clave).
+    El backend maneja las confirmaciones basado en botones y respuestas directas.
+    """
     txt = (txt or "").strip().lower()
-    yes = {"si", "sí", "correcto", "así es", "de acuerdo", "ok", "okay", "vale", "yes", "confirmo"}
-    return any(w == txt or w in txt for w in yes)
+    # Solo aceptar "sí", "si", "yes" exactos (sin variantes ni listas)
+    return txt in {"si", "sí", "yes"}
 
 
 def es_confirmacion_negativa(txt: str) -> bool:
-    """Detecta si el texto es una confirmación negativa."""
+    """
+    ✅ Simplificado - Solo detecta "no" exacto (sin listas de palabras clave).
+    El backend maneja las negaciones basado en botones y respuestas directas.
+    """
     txt = (txt or "").strip().lower()
-    no = {"no", "negativo", "no es así", "no exactamente", "corrige", "cambia"}
-    return any(w == txt or w in txt for w in no)
+    # Solo aceptar "no" exacto (sin variantes ni listas como "contactar", etc.)
+    return txt == "no"
 
 
 def es_greeting(text: str) -> bool:

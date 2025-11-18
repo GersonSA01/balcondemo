@@ -136,13 +136,20 @@ class BrainEngine:
             return np.array([])
         return self.embedder.encode(valid_texts, normalize_embeddings=normalize, show_progress_bar=False)
 
-    def predict(self, user_text: str, threshold: float = 0.65) -> Dict[str, Any]:
+    def predict(
+        self,
+        user_text: str,
+        threshold: float = 0.65,
+        answer_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Analiza el texto y devuelve intención Y posible FAQ match.
         
         Args:
             user_text: Texto del usuario a analizar
             threshold: Umbral de confianza para clasificación (default: 0.65)
+            answer_type: Tipo de respuesta ("informativo" o "operativo"). 
+                        Si es "operativo", no se buscará en FAQ.
         
         Returns:
             Dict con:
@@ -150,7 +157,8 @@ class BrainEngine:
             - confidence: Confianza principal de categoría (0.0 a 1.0)
             - cat_conf, sub_conf, dep_conf: Confianzas individuales por nivel
             - is_confident: True si categoría supera el threshold
-            - faq_match: Dict con answer, similarity, original_question si hay match
+            - faq_match: Dict con answer, similarity, original_question si hay match (solo si es informativo)
+            - answer_type_hint: Tipo de respuesta pasado como parámetro (opcional)
         """
         if not user_text or not user_text.strip():
             return {
@@ -183,8 +191,12 @@ class BrainEngine:
             "department": "OTROS",
             "confidence": 0.0,
             "is_confident": False,
-            "faq_match": None
+            "faq_match": None,
         }
+        
+        # Hint opcional para el orquestador
+        if answer_type:
+            result["answer_type_hint"] = answer_type
         
         try:
             # 1) CLASIFICACIÓN DE CATEGORÍA
@@ -290,40 +302,10 @@ class BrainEngine:
             import traceback
             traceback.print_exc()
 
-        # ------------------------------------------
-        # B. BUSCADOR DE FAQ (MEMORIA)
-        # ------------------------------------------
-        kb_vectors = self.kb.get("vectors")
-        # Validar que hay vectores disponibles (manejar arrays numpy correctamente)
-        has_vectors = False
-        if kb_vectors is not None:
-            try:
-                if isinstance(kb_vectors, np.ndarray):
-                    has_vectors = kb_vectors.size > 0 and len(kb_vectors) > 0
-                else:
-                    has_vectors = len(kb_vectors) > 0
-            except (TypeError, AttributeError):
-                has_vectors = False
+        # ✅ FAQ búsqueda eliminada - solo clasificación (category, subcategory, department)
+        # El sistema ahora solo clasifica, todas las respuestas van a PrivateGPT para informativos
+        # y a handoff para operativos
         
-        if has_vectors:
-            try:
-                # Calcular similitud de coseno contra la base de conocimiento
-                similarities = cosine_similarity(vector, kb_vectors)[0]
-                best_match_idx = np.argmax(similarities)
-                best_score = float(similarities[best_match_idx])
-                
-                # UMBRAL FAQ: Debe ser muy alto para responder automáticamente
-                FAQ_THRESHOLD = 0.82
-                if best_score > FAQ_THRESHOLD:
-                    result["faq_match"] = {
-                        "answer": self.kb["answers"][best_match_idx],
-                        "similarity": round(best_score, 3),
-                        "original_question": self.kb["questions"][best_match_idx]
-                    }
-                    print(f"💡 [BrainService] FAQ Match encontrado (similitud: {best_score:.3f})")
-            except Exception as e:
-                print(f"⚠️ [BrainService] Error en búsqueda FAQ: {e}")
-            
         return result
 
 def get_brain_engine() -> Optional[BrainEngine]:
@@ -343,7 +325,11 @@ def get_brain_engine() -> Optional[BrainEngine]:
             _BRAIN_ENGINE = None
     return _BRAIN_ENGINE
 
-def classify_user_intent_hybrid(text: str, threshold: float = 0.65) -> Dict[str, Any]:
+def classify_user_intent_hybrid(
+    text: str,
+    threshold: float = 0.65,
+    answer_type: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Función helper para ser consumida por el orquestador.
     Maneja errores para no romper el chat si el modelo falla.
@@ -351,6 +337,9 @@ def classify_user_intent_hybrid(text: str, threshold: float = 0.65) -> Dict[str,
     Args:
         text: Texto del usuario a clasificar
         threshold: Umbral de confianza (default: 0.65)
+        answer_type: Tipo de respuesta ("informativo" o "operativo").
+                    Si es "operativo", no se buscará en FAQ.
+                    Si no se proporciona, se busca en FAQ normalmente.
     
     Returns:
         Dict con clasificación y posible FAQ match, o fallback seguro si hay error
@@ -378,11 +367,19 @@ def classify_user_intent_hybrid(text: str, threshold: float = 0.65) -> Dict[str,
                 "faq_match": None
             }
         
-        result = engine.predict(text, threshold=threshold)
+        result = engine.predict(
+            text,
+            threshold=threshold,
+            answer_type=answer_type,
+        )
         
         # Log de resultados si hay clasificación confiable
         if result.get("is_confident"):
             print(f"📊 [BrainService] Clasificación: {result.get('category')} / {result.get('subcategory')} (conf: {result.get('confidence'):.2f})")
+        
+        # Log si answer_type fue pasado
+        if answer_type:
+            print(f"📋 [BrainService] answer_type recibido: '{answer_type}' - FAQ búsqueda: {'bloqueada (operativo)' if answer_type.lower() == 'operativo' else 'habilitada'}")
         
         return result
         

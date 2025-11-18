@@ -177,7 +177,8 @@ def process_handoff_details(
     print(f"   Detalles: '{details_text[:100]}'")
     print(f"   Archivo: {uploaded_file.name if uploaded_file else 'N/A'}")
     
-    thinking_status_handoff = "Generando la solicitud"
+    # ✅ Mensaje de estado desde el backend
+    thinking_status_handoff = "Enviando solicitud a mis compañeros humanos"
     student_name = get_student_name(student_data)
     
     # Obtener ID del solicitante desde student_data

@@ -6,7 +6,7 @@ Define las estructuras de datos centrales y la lógica de recuperación de conte
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from .conversation_types import ConversationStage, ConversationMode, ConversationStatus
-from .intent_parser import es_confirmacion_positiva, es_confirmacion_negativa
+# ✅ Funciones de confirmación eliminadas - solo se detecta "sí"/"no" exactos directamente
 
 
 @dataclass
@@ -50,6 +50,95 @@ class ChatContext:
         requirements = []
         current_req_index = 0
         multi_req_active = False
+        
+        # ✅ PRIMERO: Recuperar requirements y verificar si están todos completos
+        # Esto es importante para determinar si debemos ignorar mensajes de confirmación anteriores
+        # Buscar el mensaje MÁS RECIENTE que tenga requirements
+        # Priorizar mensajes con has_information=True o status="done" (respuesta final)
+        # sobre mensajes con needs_confirmation=True (confirmación pendiente)
+        best_msg_with_reqs = None
+        best_msg_priority = -1  # -1 = no encontrado, 0 = confirmación, 1 = respuesta final
+        
+        for msg in reversed(history):
+            role = msg.get("role") or msg.get("who")
+            if role not in ("bot", "assistant"):
+                continue
+            
+            meta = msg.get("meta") or {}
+            extra_from_meta = meta.get("extra") or {}
+            extra_from_msg = msg.get("extra") or {}
+            extra = extra_from_meta if extra_from_meta else extra_from_msg
+            
+            # Verificar si este mensaje tiene requirements
+            if isinstance(extra, dict) and extra.get("requirements"):
+                reqs = extra.get("requirements", [])
+                if reqs:
+                    # Determinar prioridad: respuesta final > confirmación
+                    has_info = msg.get("has_information", False) or meta.get("has_information", False)
+                    status_answer = (msg.get("status") or meta.get("status") or "").lower() == "answer"
+                    stage_answer = (msg.get("stage") or meta.get("stage") or "") == ConversationStage.ANSWER_READY.value
+                    needs_confirm = msg.get("needs_confirmation", False) or meta.get("needs_confirmation", False)
+                    
+                    # Verificar si algún requerimiento está "done"
+                    has_done_req = any(r.get("status") == "done" for r in reqs)
+                    
+                    # Prioridad: respuesta final (has_info/status_answer/stage_answer/has_done_req) > confirmación
+                    priority = 0
+                    if has_info or status_answer or stage_answer or has_done_req:
+                        priority = 1  # Respuesta final
+                    elif needs_confirm:
+                        priority = 0  # Confirmación pendiente
+                    
+                    # Si este mensaje tiene mayor prioridad que el mejor encontrado, actualizar
+                    if priority > best_msg_priority:
+                        best_msg_with_reqs = msg
+                        best_msg_priority = priority
+                        # Si encontramos una respuesta final, no necesitamos seguir buscando
+                        if priority == 1:
+                            break
+        
+        # Si encontramos un mensaje con requirements, usarlo
+        if best_msg_with_reqs:
+            msg = best_msg_with_reqs
+            meta = msg.get("meta") or {}
+            extra_from_meta = meta.get("extra") or {}
+            extra_from_msg = msg.get("extra") or {}
+            extra = extra_from_meta if extra_from_meta else extra_from_msg
+            
+            if isinstance(extra, dict) and extra.get("requirements"):
+                reqs = extra.get("requirements", [])
+                requirements = [
+                    Requirement(
+                        id=r.get("id", f"req_{i}"),
+                        summary=r.get("summary", ""),
+                        slots=r.get("slots", {}),
+                        answer_type=r.get("answer_type", "informativo"),
+                        status=r.get("status", "pending")  # ✅ El status puede ser "done" si es el mensaje final
+                    )
+                    for i, r in enumerate(reqs)
+                ]
+                current_req_index = extra.get("current_requirement_index", 0)
+                multi_req_active = extra.get("is_multi_req_confirmation", False) or len(requirements) > 1
+        
+        # ✅ Verificar si todos los requirements están completos
+        all_requirements_done = True
+        if requirements:
+            all_requirements_done = all(req.status == "done" for req in requirements)
+        
+        # ✅ Verificar si el último mensaje del bot es una respuesta completa (ANSWER_READY)
+        last_bot_msg_complete = False
+        for msg in reversed(history):
+            role = msg.get("role") or msg.get("who")
+            if role in ("bot", "assistant"):
+                meta = msg.get("meta") or {}
+                stage_from_msg = msg.get("stage") or meta.get("stage")
+                has_info = msg.get("has_information", False) or meta.get("has_information", False)
+                status_answer = (msg.get("status") or meta.get("status") or "").lower() == "answer"
+                
+                # Si el stage es ANSWER_READY o tiene has_information=True, es una respuesta completa
+                if stage_from_msg == ConversationStage.ANSWER_READY.value or has_info or status_answer:
+                    last_bot_msg_complete = True
+                break
         
         # Recorrer el historial de atrás hacia adelante (más reciente primero)
         for msg in reversed(history):
@@ -99,40 +188,27 @@ class ChatContext:
             
             if slot_payload:
                 pending_slots = slot_payload
-                if needs_confirm:
+                # ✅ Solo establecer AWAIT_CONFIRM si NO todos los requirements están completos
+                # y el último mensaje NO es una respuesta completa
+                if needs_confirm and not all_requirements_done and not last_bot_msg_complete:
                     stage = ConversationStage.AWAIT_CONFIRM
                 break
             
             if needs_confirm:
-                stage = ConversationStage.AWAIT_CONFIRM
-                # Intentar recuperar slots desde mensaje anterior del usuario
-                history_list = list(history)
-                msg_index = len(history_list) - list(reversed(history)).index(msg) - 1
-                if msg_index > 0:
-                    prev_msg = history_list[msg_index - 1]
-                    prev_text = prev_msg.get("content") or prev_msg.get("text", "")
-                    if prev_text:
-                        from .intent_parser import interpretar_intencion_principal
-                        pending_slots = interpretar_intencion_principal(prev_text)
+                # ✅ Solo establecer AWAIT_CONFIRM si NO todos los requirements están completos
+                # y el último mensaje NO es una respuesta completa
+                if not all_requirements_done and not last_bot_msg_complete:
+                    stage = ConversationStage.AWAIT_CONFIRM
+                    # Intentar recuperar slots desde mensaje anterior del usuario
+                    history_list = list(history)
+                    msg_index = len(history_list) - list(reversed(history)).index(msg) - 1
+                    if msg_index > 0:
+                        prev_msg = history_list[msg_index - 1]
+                        prev_text = prev_msg.get("content") or prev_msg.get("text", "")
+                        if prev_text:
+                            from .intent_parser import interpretar_intencion_principal
+                            pending_slots = interpretar_intencion_principal(prev_text)
                 break
-            
-            # Recuperar requirements
-            if isinstance(extra, dict) and extra.get("requirements"):
-                reqs = extra.get("requirements", [])
-                if reqs and not requirements:  # Solo tomar el primero encontrado
-                    requirements = [
-                        Requirement(
-                            id=r.get("id", f"req_{i}"),
-                            summary=r.get("summary", ""),
-                            slots=r.get("slots", {}),
-                            answer_type=r.get("answer_type", "informativo"),
-                            status=r.get("status", "pending")
-                        )
-                        for i, r in enumerate(reqs)
-                    ]
-                    current_req_index = extra.get("current_requirement_index", 0)
-                    multi_req_active = extra.get("is_multi_req_confirmation", False) or len(requirements) > 1
-                    break
         
         return cls(
             stage=stage,
@@ -159,8 +235,8 @@ class ChatContext:
         # Verificar si el requerimiento anterior está completo
         if not self.is_requirement_complete():
             # Si hay un requerimiento activo, verificar si el mensaje es una continuación
-            if es_confirmacion_positiva(user_text) or es_confirmacion_negativa(user_text):
-                return False
+            # ✅ No se verifica confirmación aquí - solo se usa el valor booleano del botón cuando existe
+            # El texto del usuario se usa directamente
             
             # No es nuevo si es respuesta a solicitudes relacionadas
             no_related_keywords = ["no hay", "ninguna", "ninguna es relevante", "continuar sin relacionar", 
@@ -184,8 +260,8 @@ class ChatContext:
         
         # Si el requerimiento anterior está completo, este es un nuevo intento
         # (a menos que sea una confirmación o respuesta específica)
-        if es_confirmacion_positiva(user_text) or es_confirmacion_negativa(user_text):
-            return False
+        # ✅ No se verifica confirmación aquí - solo se usa el valor booleano del botón cuando existe
+        # El texto del usuario se usa directamente
         
         no_related_keywords = ["no hay", "ninguna", "ninguna es relevante", "continuar sin relacionar", 
                                "sin relacionar", "no hay solicitud relacionada"]

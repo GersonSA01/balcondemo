@@ -19,7 +19,7 @@
   let needsHandoffFile = false; // Flag para mostrar input de archivo
   let selectedFile = null; // Archivo seleccionado
   let fileInputRef = null; // Referencia al input de archivo
-  let thinkingStatus = "Pensando"; // Estado dinámico del mensaje de pensamiento
+  let thinkingStatus = "Pensando"; // ✅ Estado dinámico del mensaje - solo se actualiza desde el backend (data.thinking_status)
   let thinkingInterval = null; // Intervalo para actualizar el estado dinámico
   let thinkingKey = 0; // Key para forzar re-render y animación suave
   let showingDelayedMessage = false; // Flag para indicar que se está mostrando un mensaje con delay
@@ -31,17 +31,21 @@
   let currentDepartment = null;
   let classificationConfidence = { ...DEFAULT_CLASSIFICATION_CONF };
   const DEFAULT_DEPARTMENT_LABEL = "Asistente Virtual";
+  let needsFaqFeedback = false; // Flag para mostrar feedback de FAQ
+  let faqFeedbackQuestion = ""; // Pregunta de feedback FAQ (ej: "¿Te resultó útil esta información?")
+  let faqFeedbackOptions = []; // Opciones de botones para feedback FAQ
   
   // Constantes para delays
   const GREETING_DELAY = 600; // 600ms para saludos
   const CONFIRMATION_DELAY = 800; // 800ms para confirmaciones
   
-  // Mostrar saludo inicial SIN delay al cargar el componente
-  import { onMount } from 'svelte';
+  // ✅ Saludo inicial: Ya no se genera genéricamente en el frontend
+  // El backend enviará el saludo estructurado cuando sea necesario
+  import { onMount, tick } from 'svelte';
   onMount(() => {
-    // Usar generateDynamicGreeting sin categoría/subcategoría para saludo genérico dinámico
-    const greeting = generateDynamicGreeting(null, null, studentData);
-    messages = [{ who: "bot", text: greeting }];
+    // ✅ NO generar saludo genérico - el backend lo enviará cuando sea necesario
+    // El frontend solo renderiza lo que recibe del backend
+    messages = [];
     
     queueMicrotask(() => {
       const el = document.getElementById("chat-body-inline");
@@ -50,7 +54,7 @@
   });
   
   // Función exportada para recibir categoría desde el padre
-  export function selectCategory(category, subcategory, dataEstudiante = null, newProfileType = null, profileMeta = null) {
+  export async function selectCategory(category, subcategory, dataEstudiante = null, newProfileType = null, profileMeta = null) {
     currentCategory = category;
     currentSubcategory = subcategory;
     if (newProfileType) {
@@ -72,19 +76,36 @@
     selectedRelatedRequestId = "none";
     currentDepartment = null;
     classificationConfidence = { ...DEFAULT_CLASSIFICATION_CONF };
+    needsFaqFeedback = false;
+    faqFeedbackQuestion = "";
+    faqFeedbackOptions = [];
     
-    // Agregar delay antes de mostrar el saludo
-    showingDelayedMessage = true;
-    setTimeout(() => {
-      const greeting = generateDynamicGreeting(category, subcategory, studentData);
-      messages = [{ who: "bot", text: greeting }];
-      showingDelayedMessage = false;
+    // ✅ Enviar mensaje especial al backend para que genere el saludo estructurado
+    // El backend detectará category/subcategory sin texto y responderá con saludo
+    if (category && subcategory) {
+      // Esperar a que Svelte actualice el estado reactivo antes de enviar el mensaje
+      await tick();
       
-      queueMicrotask(() => {
-        const el = document.getElementById("chat-body-inline");
-        if (el) el.scrollTop = el.scrollHeight;
-      });
-    }, GREETING_DELAY);
+      sending = true;
+      abortController = new AbortController();
+      
+      try {
+        // Usar mensaje especial "__GREETING__" que el backend reconoce como selección de categoría
+        await processMessage("__GREETING__");
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.error("Error al enviar saludo:", error);
+          messages = [...messages, { 
+            who: "bot", 
+            text: "Ocurrió un problema al generar el saludo. Por favor, intenta nuevamente." 
+          }];
+        }
+      } finally {
+        stopThinkingStatusUpdate();
+        sending = false;
+        abortController = null;
+      }
+    }
   }
 
   export function updateProfileContext(newProfileType = "estudiante", data = null, profileMeta = null) {
@@ -279,7 +300,9 @@
     if (sending) return; // Evitar múltiples clics
     
     sending = true;
+    // ✅ Limpiar flags inmediatamente para evitar que se vuelva a mostrar el menú
     needsRequirementSelection = false;
+    requirementOptions = [];
     abortController = new AbortController();
     
     // Determinar qué mensaje enviar según la opción seleccionada
@@ -370,54 +393,78 @@
       
       // Procesar respuesta usando la misma lógica que processMessage
       // Actualizar el estado de pensamiento según la respuesta del backend
-      if (data.thinking_status) {
+      // ✅ Priorizar thinking_status_alternate (solo para PrivateGPT) sobre thinking_status simple
+      if (data.thinking_status_alternate && Array.isArray(data.thinking_status_alternate)) {
+        startThinkingStatusAlternate(data.thinking_status_alternate);
+      } else if (data.thinking_status) {
         stopThinkingStatusUpdate();
         thinkingStatus = data.thinking_status;
       } else {
         stopThinkingStatusUpdate();
-        if (data.needs_related_request_selection) {
-          startRelatedRequestsSearch();
-        } else if (data.has_information || data.source_pdfs || data.fuentes) {
-          startDocumentSearch();
-        }
+        // ✅ El backend envía thinking_status, no hay que generar mensajes aquí
       }
       
-      // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
-      const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
+      // ✅ PRIORIDAD: Usar mensajes estructurados del backend si están disponibles
+      const backendMessages = data.messages || [];
       const shouldConfirm = data.needs_confirmation || false;
       const isGreeting = data.is_greeting || false;
       const isHandoff = data.handoff || data.needs_handoff_details || false;
       const needsRelatedSelection = data.needs_related_request_selection || false;
       const needsReqSelection = data.needs_requirement_selection || false;
+      const needsFaqFeedbackFlag = data.needs_faq_feedback || data.extra?.needs_faq_feedback || data.meta?.needs_faq_feedback || data.meta?.extra?.needs_faq_feedback || false;
       
-      // Si es un saludo, necesita confirmación, es una respuesta operativa (handoff), necesita selección de solicitudes relacionadas, o necesita selección de requerimientos, agregar delay
-      if (isGreeting || shouldConfirm || isHandoff || needsRelatedSelection || needsReqSelection) {
+      // Si hay mensajes estructurados del backend, usarlos directamente
+      if (backendMessages && backendMessages.length > 0) {
         showingDelayedMessage = true;
         let delayTime = CONFIRMATION_DELAY;
         if (isGreeting) {
           delayTime = GREETING_DELAY;
-        } else if (isHandoff) {
-          delayTime = CONFIRMATION_DELAY;
-        } else if (needsRelatedSelection) {
-          delayTime = CONFIRMATION_DELAY;
-        } else if (needsReqSelection) {
+        } else if (isHandoff || shouldConfirm || needsRelatedSelection || needsReqSelection || needsFaqFeedbackFlag) {
           delayTime = CONFIRMATION_DELAY;
         }
+        
         setTimeout(() => {
-          // Debug: verificar datos recibidos
-          console.log("🔍 [Debug] Datos recibidos para mensaje con requirement selection:", {
-            needs_requirement_selection: data.needs_requirement_selection,
-            requirement_options_extra: data.extra?.requirement_options,
-            requirement_options_direct: data.requirement_options,
-            requirement_options_meta: data.meta?.requirement_options,
-            requirement_options_meta_extra: data.meta?.extra?.requirement_options,
-            full_data: data
-          });
+          // ✅ Agregar mensajes estructurados del backend directamente
+          const structuredMessages = backendMessages.map(msg => ({
+            who: msg.who || "bot",
+            text: msg.text || "",
+            type: msg.type || "text",
+            buttons: msg.buttons || [],
+            meta: { ...msg.meta, ...data }  // Combinar meta del mensaje con data de la respuesta
+          }));
           
-          messages = [...messages, { who:"bot", text: reply, meta: data }];
-          needsConfirmation = shouldConfirm;
+          messages = [...messages, ...structuredMessages];
+          // ✅ Detener alternancia cuando se muestran los mensajes finales
+          stopThinkingStatusUpdate();
+          
+          // Extraer flags y opciones de los mensajes estructurados
+          const lastMessage = structuredMessages[structuredMessages.length - 1];
+          if (lastMessage && lastMessage.buttons && lastMessage.buttons.length > 0) {
+            // Si el último mensaje tiene botones, activar flags apropiados
+            const hasFaqFeedback = lastMessage.type === "faq_feedback";
+            const hasConfirmation = lastMessage.type === "confirmation";
+            
+            if (hasFaqFeedback) {
+              needsFaqFeedback = true;
+              faqFeedbackQuestion = lastMessage.text;
+              faqFeedbackOptions = lastMessage.buttons;
+              needsConfirmation = false;
+            } else if (hasConfirmation) {
+              needsConfirmation = true;
+              needsFaqFeedback = false;
+            }
+          } else {
+            needsConfirmation = shouldConfirm && !needsFaqFeedbackFlag;
+            needsFaqFeedback = needsFaqFeedbackFlag;
+          }
+          
+          // ✅ Si el backend NO envía needs_requirement_selection=true, limpiar los flags
+          // Esto evita que el menú se mantenga después de procesar una selección
           needsRequirementSelection = needsReqSelection;
-          if (data.extra?.requirement_options) {
+          if (!needsReqSelection) {
+            // Si el backend dice que NO necesita selección, limpiar las opciones también
+            requirementOptions = [];
+          } else if (data.extra?.requirement_options) {
             requirementOptions = data.extra.requirement_options;
           } else if (data.requirement_options) {
             requirementOptions = data.requirement_options;
@@ -428,6 +475,7 @@
           } else {
             requirementOptions = [];
           }
+          
           showingDelayedMessage = false;
           
           queueMicrotask(() => {
@@ -436,14 +484,74 @@
           });
         }, delayTime);
       } else {
-        // Sin delay para respuestas normales
-        messages = [...messages, { who:"bot", text: reply, meta: data }];
-        needsConfirmation = false;
-        needsRequirementSelection = needsReqSelection;
-        if (data.extra?.requirement_options) {
-          requirementOptions = data.extra.requirement_options;
+        // ✅ FALLBACK: Compatibilidad con formato legacy (durante transición)
+        const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
+        
+        if (isGreeting || shouldConfirm || isHandoff || needsRelatedSelection || needsReqSelection || needsFaqFeedbackFlag) {
+          showingDelayedMessage = true;
+          let delayTime = CONFIRMATION_DELAY;
+          if (isGreeting) {
+            delayTime = GREETING_DELAY;
+          } else if (isHandoff) {
+            delayTime = CONFIRMATION_DELAY;
+          } else if (needsRelatedSelection) {
+            delayTime = CONFIRMATION_DELAY;
+          } else if (needsReqSelection) {
+            delayTime = CONFIRMATION_DELAY;
+          } else if (needsFaqFeedbackFlag) {
+            delayTime = CONFIRMATION_DELAY;
+          }
+          
+          setTimeout(() => {
+            messages = [...messages, { who:"bot", text: reply, meta: data }];
+            // ✅ Detener alternancia cuando se muestra el mensaje final
+            stopThinkingStatusUpdate();
+            
+            const faqConfirmText = data.confirm_text || data.extra?.confirm_text || data.meta?.confirm_text || data.meta?.extra?.confirm_text || "";
+            const faqOptions = data.faq_feedback_options || data.extra?.faq_feedback_options || data.meta?.faq_feedback_options || data.meta?.extra?.faq_feedback_options || [];
+            
+            if (needsFaqFeedbackFlag && faqConfirmText) {
+              messages = [...messages, { 
+                who: "bot", 
+                text: faqConfirmText, 
+                meta: { ...data, is_faq_feedback_message: true } 
+              }];
+            }
+            
+            needsConfirmation = shouldConfirm && !needsFaqFeedbackFlag;
+            needsFaqFeedback = needsFaqFeedbackFlag;
+            faqFeedbackQuestion = faqConfirmText;
+            faqFeedbackOptions = faqOptions;
+            needsRequirementSelection = needsReqSelection;
+            
+            if (data.extra?.requirement_options) {
+              requirementOptions = data.extra.requirement_options;
+            } else if (data.requirement_options) {
+              requirementOptions = data.requirement_options;
+            } else {
+              requirementOptions = [];
+            }
+            
+            showingDelayedMessage = false;
+            
+            queueMicrotask(() => {
+              const el = document.getElementById("chat-body-inline");
+              if (el) el.scrollTop = el.scrollHeight;
+            });
+          }, delayTime);
         } else {
-          requirementOptions = [];
+          messages = [...messages, { who:"bot", text: reply, meta: data }];
+          needsConfirmation = false;
+          needsFaqFeedback = false;
+          // ✅ Si el backend NO envía needs_requirement_selection=true, limpiar los flags
+          needsRequirementSelection = needsReqSelection;
+          if (!needsReqSelection) {
+            requirementOptions = [];
+          } else if (data.extra?.requirement_options) {
+            requirementOptions = data.extra.requirement_options;
+          } else {
+            requirementOptions = [];
+          }
         }
       }
       
@@ -519,9 +627,7 @@
     selectedRelatedRequestId = "none"; // Resetear selección
     abortController = new AbortController();
     
-    // Después de seleccionar solicitud relacionada, buscar en documentos
-    startDocumentSearch();
-    
+    // ✅ El backend enviará thinking_status cuando procese la solicitud relacionada
     const response = requestId ? requestId : "no hay solicitud relacionada";
     
     let userMessage = "No hay solicitud relacionada";
@@ -570,22 +676,19 @@
       const data = await res.json();
       
       // Actualizar el estado de pensamiento según la respuesta del backend
-      if (data.thinking_status) {
+      // ✅ Priorizar thinking_status_alternate (solo para PrivateGPT) sobre thinking_status simple
+      if (data.thinking_status_alternate && Array.isArray(data.thinking_status_alternate)) {
+        startThinkingStatusAlternate(data.thinking_status_alternate);
+      } else if (data.thinking_status) {
         stopThinkingStatusUpdate();
         thinkingStatus = data.thinking_status;
       } else if (data.needs_handoff_details || data.handoff_sent) {
         // Si es handoff, mantener el mensaje establecido (ya se estableció antes en send())
         stopThinkingStatusUpdate();
-        if (data.handoff_sent) {
-          thinkingStatus = "Enviando solicitud a mis compañeros humanos";
-        }
+        // ✅ El backend debe enviar thinking_status en data.thinking_status
       } else {
         stopThinkingStatusUpdate();
-        if (data.needs_related_request_selection) {
-          startRelatedRequestsSearch();
-        } else if (data.has_information || data.source_pdfs || data.fuentes) {
-          startDocumentSearch();
-        }
+        // ✅ El backend envía thinking_status, no hay que generar mensajes aquí
       }
       
       // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
@@ -754,15 +857,8 @@
     sending = true;
     abortController = new AbortController();
     
-    // Si está enviando handoff con archivo, mostrar mensaje de envío
-    if (needsHandoffFile && selectedFile) {
-      thinkingKey += 1;
-      thinkingStatus = "Enviando solicitud a mis compañeros humanos";
-      stopThinkingStatusUpdate(); // Detener cualquier actualización anterior
-    } else {
-      // Iniciar con interpretación de intención
-      startIntentParsing();
-    }
+    // ✅ El backend enviará thinking_status cuando procese el mensaje (incluyendo handoff)
+    // No hay que asignar thinking_status manualmente aquí
     
     await processMessage(text);
     
@@ -819,8 +915,8 @@
     
     sending = true;
     thinkingKey += 1;
-    thinkingStatus = "Procesando tu selección";
-    startIntentParsing();
+    // ✅ El backend enviará thinking_status cuando procese la selección
+    thinkingStatus = "Pensando"; // Estado por defecto hasta que llegue del backend
     
     try {
       // Enviar acción de control sin texto real (usar carácter especial)
@@ -837,44 +933,23 @@
     }
   }
   
-  // Función para interpretar intención - solo muestra "Entendiendo el requerimiento del usuario"
-  function startIntentParsing() {
-    thinkingKey += 1; // Forzar re-render para animación suave
-    thinkingStatus = "Entendiendo el requerimiento del usuario";
-    // No necesita intervalo, solo un estado
-  }
-  
-  // Función para buscar solicitudes relacionadas - muestra dos estados
-  function startRelatedRequestsSearch() {
-    let elapsed = 0;
+  // ✅ Función para alternar mensajes de thinking_status cuando viene thinking_status_alternate del backend
+  // Solo se usa cuando el backend envía un array de mensajes para alternar (solo para PrivateGPT)
+  function startThinkingStatusAlternate(alternateMessages) {
+    if (!alternateMessages || !Array.isArray(alternateMessages) || alternateMessages.length === 0) {
+      return;
+    }
+    
+    let index = 0;
+    thinkingStatus = alternateMessages[0]; // Iniciar con el primer mensaje
+    
+    stopThinkingStatusUpdate(); // Detener cualquier intervalo anterior
+    
     thinkingInterval = setInterval(() => {
-      elapsed += 1;
+      index = (index + 1) % alternateMessages.length;
       thinkingKey += 1; // Forzar re-render para animación suave
-      if (elapsed < 3) {
-        thinkingStatus = "Analizando tus solicitudes anteriores";
-      } else {
-        thinkingStatus = "Buscando coincidencias";
-      }
-    }, 1000);
-  }
-  
-  // Función para buscar en documentos (RAG) - alterna entre dos estados (por tiempo)
-  function startDocumentSearch() {
-    let elapsed = 0;
-    thinkingInterval = setInterval(() => {
-      elapsed += 1;
-      thinkingKey += 1; // Forzar re-render para animación suave
-      // Alternar entre los dos estados cada 3 segundos para que no sea tan repetitivo
-      const ragStates = ["Buscando documentos", "Leyendo para dar una mejor respuesta"];
-      const index = Math.floor(elapsed / 3) % ragStates.length;
-      thinkingStatus = ragStates[index];
-    }, 1000);
-  }
-  
-  // Función genérica (mantener por compatibilidad, pero no se usará)
-  function startThinkingStatusUpdate() {
-    // Por defecto, usar búsqueda de documentos
-    startDocumentSearch();
+      thinkingStatus = alternateMessages[index];
+    }, 3000); // Alternar cada 3 segundos
   }
   
   function stopThinkingStatusUpdate() {
@@ -977,22 +1052,18 @@
       }
       
       // Actualizar el estado de pensamiento según la respuesta del backend
-      // Si el backend envía thinking_status, usarlo directamente
-      if (data.thinking_status) {
+      // ✅ Priorizar thinking_status_alternate (solo para PrivateGPT) sobre thinking_status simple
+      if (data.thinking_status_alternate && Array.isArray(data.thinking_status_alternate)) {
+        // Si hay mensajes alternados, iniciar alternancia
+        startThinkingStatusAlternate(data.thinking_status_alternate);
+      } else if (data.thinking_status) {
+        // Si solo hay thinking_status simple, usarlo directamente
         stopThinkingStatusUpdate(); // Detener cualquier actualización anterior
         thinkingStatus = data.thinking_status;
       } else {
-        // Si no viene thinking_status, detectar según el tipo de respuesta
+        // ✅ Si no viene thinking_status, usar estado por defecto - el backend debe enviarlo siempre
         stopThinkingStatusUpdate(); // Detener cualquier actualización anterior
-        
-        if (data.needs_related_request_selection) {
-          // Si necesita selección de solicitudes relacionadas, usar esa función
-          startRelatedRequestsSearch();
-        } else if (data.has_information || data.source_pdfs || data.fuentes) {
-          // Si tiene información o fuentes, está buscando en documentos
-          startDocumentSearch();
-        }
-        // Si necesita confirmación, mantener "Entendiendo el requerimiento del usuario"
+        thinkingStatus = "Pensando"; // Estado por defecto
       }
       
       // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
@@ -1020,6 +1091,8 @@
           messages = [...messages, { who:"bot", text: reply, meta: data }];
           needsConfirmation = shouldConfirm;
           showingDelayedMessage = false;
+          // ✅ Detener alternancia cuando se muestra el mensaje final
+          stopThinkingStatusUpdate();
           
           queueMicrotask(() => {
             const el = document.getElementById("chat-body-inline");
@@ -1030,6 +1103,8 @@
         // Sin delay para respuestas normales
         messages = [...messages, { who:"bot", text: reply, meta: data }];
         needsConfirmation = false;
+        // ✅ Detener alternancia cuando se muestra el mensaje final
+        stopThinkingStatusUpdate();
       }
       
       needsRelatedRequestSelection = needsRelatedSelection;
@@ -1141,20 +1216,237 @@
     }
   }
 
+  // ✅ Función genérica para manejar clicks en botones estructurados del backend
+  async function handleButtonClick(button, message) {
+    sending = true;
+    
+    // Limpiar flags de confirmación/feedback
+    needsConfirmation = false;
+    needsFaqFeedback = false;
+    faqFeedbackQuestion = "";
+    faqFeedbackOptions = [];
+    
+    // ✅ Determinar valor booleano del botón (true/false)
+    // Basado en action o id del botón - sin depender de palabras del usuario
+    let confirmed = null; // null significa que no es botón de confirmación
+    if (button.action === "confirm" || button.action === "close" || 
+        button.id === "faq_feedback_yes" || button.id === "confirm_yes") {
+      confirmed = true;
+    } else if (button.action === "cancel" || button.action === "handoff" || 
+               button.id === "faq_feedback_no" || button.id === "confirm_no") {
+      confirmed = false;
+    }
+    
+    // Texto para mostrar en el mensaje del usuario (solo UI, no usado para lógica)
+    const userResponseText = button.label || button.text || (confirmed === true ? "Sí" : confirmed === false ? "No" : "Opción");
+    
+    // Agregar mensaje del usuario
+    messages = [...messages, { who: "user", text: userResponseText }];
+    queueMicrotask(() => {
+      const el = document.getElementById("chat-body-inline");
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    
+    abortController = new AbortController();
+    
+    try {
+      const history = formatHistoryForBackend();
+      
+      // ✅ Detectar control_action desde button.action para acciones especiales
+      let controlAction = null;
+      if (button.action === "go_next_requirement" || button.action === "discard_remaining_requirements" || 
+          button.action === "continue_current" || button.action === "close_all" || button.action === "new_requirement") {
+        controlAction = button.action;
+      } else if (button.id === "go_next_requirement" || button.id === "discard_remaining_requirements" ||
+                 button.id === "continue_current" || button.id === "close_all" || button.id === "new_requirement") {
+        controlAction = button.id;
+      }
+      
+      const requestBody = { 
+        message: button.id || button.action || userResponseText, // Mantener para compatibilidad
+        history: history
+      };
+      
+      // ✅ Enviar control_action si el botón tiene una acción especial
+      if (controlAction) {
+        requestBody.control_action = controlAction;
+      }
+      
+      // ✅ Enviar valor booleano directamente si es botón de confirmación
+      if (confirmed !== null) {
+        requestBody.confirmed = confirmed;
+      }
+      
+      if (currentCategory && currentSubcategory) {
+        requestBody.category = currentCategory;
+        requestBody.subcategory = currentSubcategory;
+      }
+      
+      if (studentData) {
+        requestBody.student_data = studentData;
+      }
+      if (profileType) {
+        requestBody.profile_type = profileType;
+      }
+      if (profileId) {
+        requestBody.perfil_id = profileId;
+      }
+      
+      const res = await fetch("/api/chat/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: abortController.signal
+      });
+      const data = await res.json();
+      updateHeaderClassification(data);
+      
+      // Procesar respuesta usando la misma lógica que el código normal
+      // Actualizar el estado de pensamiento según la respuesta del backend
+      // ✅ Priorizar thinking_status_alternate (solo para PrivateGPT) sobre thinking_status simple
+      if (data.thinking_status_alternate && Array.isArray(data.thinking_status_alternate)) {
+        startThinkingStatusAlternate(data.thinking_status_alternate);
+      } else if (data.thinking_status) {
+        stopThinkingStatusUpdate();
+        thinkingStatus = data.thinking_status;
+      } else {
+        stopThinkingStatusUpdate();
+        // ✅ El backend envía thinking_status, no hay que generar mensajes aquí
+      }
+      
+      // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
+      const reply = data.response || data.message || "No pude entenderte, ¿puedes reformular?";
+      const shouldConfirm = data.needs_confirmation || false;
+      const isGreeting = data.is_greeting || false;
+      const isHandoff = data.handoff || data.needs_handoff_details || false;
+      const needsRelatedSelection = data.needs_related_request_selection || false;
+      const needsReqSelection = data.needs_requirement_selection || false;
+      const needsFaqFeedbackFlag = data.needs_faq_feedback || data.extra?.needs_faq_feedback || data.meta?.needs_faq_feedback || data.meta?.extra?.needs_faq_feedback || false;
+      
+      // Si es un saludo, necesita confirmación, es una respuesta operativa (handoff), necesita selección de solicitudes relacionadas, o necesita selección de requerimientos, agregar delay
+      if (isGreeting || shouldConfirm || isHandoff || needsRelatedSelection || needsReqSelection || needsFaqFeedbackFlag) {
+        showingDelayedMessage = true;
+        let delayTime = CONFIRMATION_DELAY;
+        if (isGreeting) {
+          delayTime = GREETING_DELAY;
+        } else if (isHandoff) {
+          delayTime = CONFIRMATION_DELAY;
+        } else if (needsRelatedSelection) {
+          delayTime = CONFIRMATION_DELAY;
+        } else if (needsReqSelection) {
+          delayTime = CONFIRMATION_DELAY;
+        } else if (needsFaqFeedbackFlag) {
+          delayTime = CONFIRMATION_DELAY;
+        }
+        setTimeout(() => {
+          messages = [...messages, { who: "bot", text: reply, meta: data }];
+          
+          // Si hay FAQ feedback, agregar mensaje adicional con la pregunta de feedback
+          const faqConfirmText = data.confirm_text || data.extra?.confirm_text || data.meta?.confirm_text || data.meta?.extra?.confirm_text || "";
+          const faqOptions = data.faq_feedback_options || data.extra?.faq_feedback_options || data.meta?.faq_feedback_options || data.meta?.extra?.faq_feedback_options || [];
+          
+          if (needsFaqFeedbackFlag && faqConfirmText) {
+            messages = [...messages, { 
+              who: "bot", 
+              text: faqConfirmText, 
+              meta: { ...data, is_faq_feedback_message: true } 
+            }];
+          }
+          
+          needsConfirmation = shouldConfirm && !needsFaqFeedbackFlag;
+          needsFaqFeedback = needsFaqFeedbackFlag;
+          faqFeedbackQuestion = faqConfirmText;
+          faqFeedbackOptions = faqOptions;
+          needsRequirementSelection = needsReqSelection;
+          
+          if (data.extra?.requirement_options) {
+            requirementOptions = data.extra.requirement_options;
+          } else if (data.requirement_options) {
+            requirementOptions = data.requirement_options;
+          } else {
+            requirementOptions = [];
+          }
+          
+          showingDelayedMessage = false;
+          
+          queueMicrotask(() => {
+            const el = document.getElementById("chat-body-inline");
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        }, delayTime);
+      } else {
+        // Sin delay para respuestas normales
+        messages = [...messages, { who: "bot", text: reply, meta: data }];
+        needsConfirmation = false;
+        needsFaqFeedback = false;
+        needsRequirementSelection = needsReqSelection;
+        
+        if (data.extra?.requirement_options) {
+          requirementOptions = data.extra.requirement_options;
+        } else {
+          requirementOptions = [];
+        }
+      }
+      
+      needsRelatedRequestSelection = needsRelatedSelection;
+      if (data.related_requests) {
+        relatedRequests = data.related_requests;
+        selectedRelatedRequestId = "none";
+      }
+      
+      // Detectar si se necesita más detalles de handoff
+      if (data.needs_handoff_details) {
+        conversationBlocked = false;
+        needsHandoffFile = data.needs_handoff_file || false;
+      } else {
+        needsHandoffFile = false;
+        selectedFile = null;
+        if (fileInputRef) {
+          fileInputRef.value = "";
+        }
+      }
+      
+      // Si se envió el handoff exitosamente, limpiar
+      if (data.handoff_sent) {
+        needsHandoffFile = false;
+        selectedFile = null;
+        if (fileInputRef) {
+          fileInputRef.value = "";
+        }
+      }
+      
+      if (data.confirmed && data.category && data.subcategory) {
+        currentCategory = data.category;
+        currentSubcategory = data.subcategory;
+      }
+      
+    } catch (error) {
+      if (error.name === "AbortError") {
+        console.log("Request aborted");
+      } else {
+        console.error("Error en FAQ feedback:", error);
+        messages = [...messages, { 
+          who: "bot", 
+          text: "Lo siento, hubo un error al procesar tu respuesta. Por favor intenta de nuevo." 
+        }];
+      }
+    } finally {
+      sending = false;
+      abortController = null;
+    }
+  }
+
   async function confirmUser(confirmed){
     sending = true;
     needsConfirmation = false;
-    const response = confirmed ? "si" : "no";
+    
+    // ✅ Valor booleano directo (true/false) - sin depender de texto
+    // Texto solo para mostrar en UI
+    const response = confirmed ? "Sí" : "No";
+    
     abortController = new AbortController();
     
-    // Si el usuario confirma, iniciar búsqueda de solicitudes relacionadas
-    if (confirmed) {
-      startRelatedRequestsSearch();
-    } else {
-      // Si rechaza, volver a interpretar intención
-      startIntentParsing();
-    }
-    
+    // ✅ El backend enviará thinking_status cuando procese la confirmación
     messages = [...messages, { who:"user", text: response }];
     queueMicrotask(() => {
       const el = document.getElementById("chat-body-inline");
@@ -1164,8 +1456,9 @@
     try{
       const history = formatHistoryForBackend();
       const requestBody = { 
-        message: response,
-        history: history
+        message: response, // Mantener para compatibilidad
+        history: history,
+        confirmed: confirmed  // ✅ Enviar valor booleano directamente
       };
       
       if (currentCategory && currentSubcategory) {
@@ -1192,16 +1485,15 @@
       const data = await res.json();
       
       // Actualizar el estado de pensamiento según la respuesta del backend
-      if (data.thinking_status) {
+      // ✅ Priorizar thinking_status_alternate (solo para PrivateGPT) sobre thinking_status simple
+      if (data.thinking_status_alternate && Array.isArray(data.thinking_status_alternate)) {
+        startThinkingStatusAlternate(data.thinking_status_alternate);
+      } else if (data.thinking_status) {
         stopThinkingStatusUpdate();
         thinkingStatus = data.thinking_status;
       } else {
         stopThinkingStatusUpdate();
-        if (data.needs_related_request_selection) {
-          startRelatedRequestsSearch();
-        } else if (data.has_information || data.source_pdfs || data.fuentes) {
-          startDocumentSearch();
-        }
+        // ✅ El backend envía thinking_status, no hay que generar mensajes aquí
       }
       
       // Priorizar response (formato PrivateGPT) sobre message (formato legacy)
@@ -1461,6 +1753,20 @@
               </div>
             </div>
           {/if}
+          
+          <!-- ✅ Renderizar botones estructurados del backend si el mensaje los tiene -->
+          {#if m.who === "bot" && m.buttons && m.buttons.length > 0}
+            <div class="message-buttons">
+              {#each m.buttons as button}
+                <button 
+                  class="confirm-btn {button.style || (button.action === 'confirm' || button.action === 'close' || button.id === 'faq_feedback_yes' || button.id === 'confirm_yes' ? 'yes' : 'no')}"
+                  on:click={() => handleButtonClick(button, m)}
+                  disabled={sending}>
+                  {button.label || button.text || "Opción"}
+                </button>
+              {/each}
+            </div>
+          {/if}
         </div>
       </div>
     {/each}
@@ -1498,6 +1804,31 @@
         </div>
         <div class="blocked-notice">
           ✅ Tu solicitud fue enviada exitosamente. Un agente se pondrá en contacto contigo pronto.
+        </div>
+      {:else if needsFaqFeedback}
+        <div class="input-row">
+          <textarea rows="2" value="" disabled
+            placeholder="Por favor responde con los botones"></textarea>
+        </div>
+        <div class="confirmation-buttons">
+          {#if faqFeedbackOptions.length > 0}
+            {#each faqFeedbackOptions as option}
+              <button 
+                class="confirm-btn {option.action === 'close' || option.id === 'faq_feedback_yes' ? 'yes' : 'no'}" 
+                on:click={() => handleFaqFeedback(option.id || option.action)} 
+                disabled={sending}>
+                {option.label || option.text || "Opción"}
+              </button>
+            {/each}
+          {:else}
+            <!-- Fallback a botones por defecto si no hay opciones -->
+            <button class="confirm-btn yes" on:click={() => handleFaqFeedback('faq_feedback_yes')} disabled={sending}>
+              Sí
+            </button>
+            <button class="confirm-btn no" on:click={() => handleFaqFeedback('faq_feedback_no')} disabled={sending}>
+              No, contáctame con un agente
+            </button>
+          {/if}
         </div>
       {:else if needsConfirmation}
         <div class="input-row">
@@ -1544,19 +1875,16 @@
         </button>
       </div>
     {:else if needsRequirementSelection && requirementOptions.length > 0}
-      <!-- Mostrar botones de selección de requerimientos -->
-      <div class="requirement-selection-container">
-        <div class="requirement-buttons">
-          {#each requirementOptions as option}
-            <button 
-              class="requirement-btn"
-              on:click={() => handleRequirementSelection(option.id)}
-              disabled={sending}
-            >
-              {option.label}
-            </button>
-          {/each}
-        </div>
+      <!-- Input bloqueado cuando hay selección de requerimientos activa -->
+      <div class="input-row">
+        <textarea rows="2" value="" disabled
+          placeholder="Por favor selecciona una opción del menú de temas"></textarea>
+        <button class="send-btn" disabled>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
       </div>
     {:else if hasActiveMultiReqMenu}
         <!-- Input bloqueado cuando hay menú de multi-requirement activo -->

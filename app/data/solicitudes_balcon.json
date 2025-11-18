@@ -643,6 +643,52 @@
           "descripcion": "SOLICITUD GENERAL"
         }
       }
+    },
+    {
+      "id": 30,
+      "codigo": "SOL-CAMDE-202511-000030",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251118154015.pdf",
+      "descripcion": "QUIERO CAMBIAR DE CARRERA DE MATEMATICA",
+      "numero": 27,
+      "fecha_creacion": "2025-11-18T15:40:15.855392",
+      "fecha_modificacion": "2025-11-18T15:40:15.855392",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "CAMBIO DE CARRERA",
+        "proceso": {
+          "id": 0,
+          "sigla": "CAMDE",
+          "descripcion": "CAMBIO DE CARRERA"
+        }
+      }
+    },
+    {
+      "id": 31,
+      "codigo": "SOL-BECEST-202511-000031",
+      "solicitante_id": 119601,
+      "agente_id": null,
+      "estado": 1,
+      "tipo": 2,
+      "archivo": "solicitudbalcon/solicitud_20251118154245.pdf",
+      "descripcion": "CITA MEDICA AAAAAA",
+      "numero": 28,
+      "fecha_creacion": "2025-11-18T15:42:45.099347",
+      "fecha_modificacion": "2025-11-18T15:42:45.099347",
+      "fecha_expiracion_solicitud": null,
+      "servicio": {
+        "id": 0,
+        "nombre": "BECA ESTUDIANTIL",
+        "proceso": {
+          "id": 0,
+          "sigla": "BECEST",
+          "descripcion": "BECA ESTUDIANTIL"
+        }
+      }
     }
   ],
   "historiales": [
@@ -1022,10 +1068,36 @@
       "archivo": null,
       "fecha_creacion": "2025-11-17T21:23:44.630792",
       "servicio": "Solicitud General"
+    },
+    {
+      "id": 30,
+      "solicitud_id": 30,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-18T15:40:15.855392",
+      "servicio": "CAMBIO DE CARRERA"
+    },
+    {
+      "id": 31,
+      "solicitud_id": 31,
+      "estado": 1,
+      "observacion": "Solicitud recibida en el sistema. Se procederá a revisar la documentación adjunta.",
+      "asignadorecibe_id": null,
+      "asignadorecibe": "Sistema",
+      "departamento": "DIRECCIÓN DE GESTIÓN Y SERVICIOS ACADÉMICOS",
+      "carrera_id": null,
+      "archivo": null,
+      "fecha_creacion": "2025-11-18T15:42:45.099347",
+      "servicio": "BECA ESTUDIANTIL"
     }
   ],
   "requisitos": [],
-  "next_id": 30,
-  "next_historial_id": 30,
+  "next_id": 32,
+  "next_historial_id": 32,
   "next_requisito_id": 1
 }

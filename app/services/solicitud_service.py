@@ -454,6 +454,59 @@ def obtener_solicitudes_usuario(solicitante_id: int) -> List[Dict[str, Any]]:
     return solicitudes_formateadas
 
 
+def obtener_solicitud_por_id(solicitud_id: int, solicitante_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """
+    Obtiene una solicitud por su ID.
+    
+    Args:
+        solicitud_id: ID de la solicitud
+        solicitante_id: ID del solicitante (opcional, para verificación)
+    
+    Returns:
+        Dict con la solicitud completa o None si no se encuentra
+    """
+    data = _load_solicitudes()
+    
+    # Buscar solicitud
+    solicitud = next(
+        (s for s in data["solicitudes"] if s.get("id") == solicitud_id),
+        None
+    )
+    
+    if not solicitud:
+        return None
+    
+    # Verificar que pertenezca al solicitante si se proporciona
+    if solicitante_id and solicitud.get("solicitante_id") != solicitante_id:
+        return None
+    
+    # Formatear solicitud
+    fecha_creacion = datetime.fromisoformat(solicitud["fecha_creacion"]) if solicitud.get("fecha_creacion") else None
+    
+    solicitud_formateada = {
+        "id": solicitud["id"],
+        "numero": solicitud["numero"],
+        "codigo": solicitud["codigo"],
+        "codigo_generado": solicitud.get("codigo"),  # Alias para compatibilidad
+        "descripcion": solicitud["descripcion"],
+        "estado": solicitud["estado"],
+        "estado_display": ESTADOS_SOLICITUD.get(solicitud["estado"], "DESCONOCIDO"),
+        "tipo": solicitud.get("tipo", TIPO_SOLICITUD),
+        "fecha_creacion": solicitud["fecha_creacion"],
+        "fecha_creacion_v2": fecha_creacion.strftime("%d/%m/%Y") if fecha_creacion else "",
+        "hora_creacion_v2": fecha_creacion.strftime("%H:%M") if fecha_creacion else "",
+        "fecha_modificacion": solicitud.get("fecha_modificacion"),
+        "archivo": solicitud.get("archivo"),
+        "solicitante_id": solicitud.get("solicitante_id"),
+        "agente_id": solicitud.get("agente_id"),
+        "servicio": solicitud.get("servicio", {}),
+        "nombre_servicio": solicitud.get("servicio", {}).get("nombre", "Solicitud General"),
+        "nombre_servicio_minus": solicitud.get("servicio", {}).get("nombre", "Solicitud General"),
+    }
+    
+    return solicitud_formateada
+
+
 def obtener_historial_solicitud(solicitud_id: int) -> Dict[str, Any]:
     """
     Obtiene el historial completo de una solicitud.

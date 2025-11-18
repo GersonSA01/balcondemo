@@ -298,6 +298,14 @@ def chat_api(request):
             subcategory = request.POST.get("subcategory")
             profile_type = request.POST.get("profile_type") or request.POST.get("profileType")
             control_action = request.POST.get("control_action")  # Acción de control para multi-requirement
+            # ✅ Valor booleano directo del botón (true/false/null) - sin depender de palabras
+            confirmed_str = request.POST.get("confirmed")
+            confirmed = None
+            if confirmed_str is not None:
+                if confirmed_str.lower() == "true":
+                    confirmed = True
+                elif confirmed_str.lower() == "false":
+                    confirmed = False
             
             student_data_str = request.POST.get("student_data")
             student_data_raw = None
@@ -393,6 +401,7 @@ def chat_api(request):
             profile_type = payload.get("profile_type")
             perfil_id_from_payload = payload.get("perfil_id") or payload.get("perfilId")  # ID del perfil desde el frontend
             control_action = payload.get("control_action")  # Acción de control para multi-requirement (sin LLM)
+            confirmed = payload.get("confirmed")  # ✅ Valor booleano directo del botón (true/false/null) - sin depender de palabras
             
             # Cargar datos completos desde data_unemi.json si tenemos información del perfil
             student_data = None
@@ -495,7 +504,8 @@ def chat_api(request):
             student_data=student_data,
             uploaded_file=uploaded_file,  # Pasar archivo si existe
             perfil_id=perfil_id_para_service,  # Pasar perfil_id si está disponible
-            control_action=control_action  # Pasar control_action para multi-requirement
+            control_action=control_action,  # Pasar control_action para multi-requirement
+            confirmed=confirmed  # ✅ Pasar valor booleano directo del botón (true/false/null)
         )
     except Exception as e:
         import traceback
